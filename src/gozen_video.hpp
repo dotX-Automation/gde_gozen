@@ -101,7 +101,7 @@ class GoZenVideo : public Resource {
 	}
 	inline bool _log_err(String message) {
 		UtilityFunctions::printerr("GoZenVideo: ", message, "!");
-		return false;
+		return true;
 	}
 
   public:

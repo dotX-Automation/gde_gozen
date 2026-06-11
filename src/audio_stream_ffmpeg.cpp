@@ -513,15 +513,20 @@ bool AudioStreamFFmpegPlayback::fill_buffer() {
 }
 
 void AudioStreamFFmpeg::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("open", "path", "stream_index"), &AudioStreamFFmpeg::open, DEFVAL(-1));
 	ClassDB::bind_method(D_METHOD("__instantiate_playback"), &AudioStreamFFmpeg::_instantiate_playback);
+
+	ClassDB::bind_method(D_METHOD("open", "path", "stream_index"), &AudioStreamFFmpeg::open, DEFVAL(-1));
+
 	ClassDB::bind_method(D_METHOD("set_use_icy", "value"), &AudioStreamFFmpeg::set_use_icy);
-	ClassDB::bind_method(D_METHOD("get_use_icy"), &AudioStreamFFmpeg::get_use_icy);
 	ClassDB::bind_method(D_METHOD("set_headers", "headers_str"), &AudioStreamFFmpeg::set_headers);
+
+	ClassDB::bind_method(D_METHOD("is_open"), &AudioStreamFFmpeg::is_open);
+	ClassDB::bind_method(D_METHOD("get_use_icy"), &AudioStreamFFmpeg::get_use_icy);
 	ClassDB::bind_method(D_METHOD("get_headers"), &AudioStreamFFmpeg::get_headers);
 	ClassDB::bind_method(D_METHOD("get_icy_headers"), &AudioStreamFFmpeg::get_icy_headers);
 	ClassDB::bind_method(D_METHOD("get_stream_title"), &AudioStreamFFmpeg::get_stream_title);
 	ClassDB::bind_method(D_METHOD("get_tags"), &AudioStreamFFmpeg::get_tags);
+
 	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_icy"), "set_use_icy", "get_use_icy");
 	ADD_PROPERTY(PropertyInfo(Variant::STRING, "headers"), "set_headers", "get_headers");
 }

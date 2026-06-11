@@ -25,7 +25,7 @@ class GoZenAudio : public Resource {
 	static inline void _log(String message) { UtilityFunctions::print("GoZenAudio: ", message, "."); }
 	static inline bool _log_err(String message) {
 		UtilityFunctions::printerr("GoZenAudio: ", message, "!");
-		return false;
+		return true;
 	}
 
   public:

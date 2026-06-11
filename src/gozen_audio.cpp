@@ -238,5 +238,5 @@ PackedByteArray GoZenAudio::get_audio_data(String file_path, int stream_index, b
 
 void GoZenAudio::_bind_methods() {
 	ClassDB::bind_static_method("GoZenAudio", D_METHOD("get_audio_data", "file_path", "stream_index", "stereo"),
-								&GoZenAudio::get_audio_data, DEFVAL(-1), DEFVAL(true));
+		&GoZenAudio::get_audio_data, DEFVAL(-1), DEFVAL(true));
 }
