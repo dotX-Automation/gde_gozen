@@ -36,9 +36,7 @@ if "linux" in platform:
     )
     env.Append(LIBS=["tls", "ssl", "crypto", "vpx", "aom"])
 
-    if arch != "arm64":
-        env.Append(LIBS=["z"])
-    env.Append(LIBS=["m", "pthread", "dl"])
+    env.Append(LIBS=["z", "m", "pthread", "dl"])
 elif "windows" in platform:
     env.Append(LINKFLAGS=["-static"], LIBS=LIBS_COMMON)
 
@@ -46,7 +44,7 @@ elif "windows" in platform:
     env.Append(
         CPPPATH=["ffmpeg/bin/include"],
         LIBPATH=["ffmpeg/bin/lib", "ffmpeg/bin/lib64"],
-        LIBS=["ws2_32", "bcrypt", "secur32", "shlwapi", "mfuuid", "strmiids"],
+        LIBS=["ws2_32", "bcrypt", "secur32", "shlwapi", "mfuuid", "strmiids", "z"],
     )
 elif "macos" in platform:
     # NOTE: MacOS can only be build on a MacOS machine!
