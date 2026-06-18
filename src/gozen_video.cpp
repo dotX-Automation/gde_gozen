@@ -360,6 +360,7 @@ int GoZenVideo::open(const String& video_path) {
 
 void GoZenVideo::close() {
 	_log("Closing video file on path: " + path);
+
 	loaded = false;
 	current_frame = -1;
 
@@ -463,11 +464,11 @@ PackedInt32Array GoZenVideo::get_streams(int stream_type) {
 	}
 
 	switch (stream_type) {
-	case STREAM_VIDEO:
+	case StreamType::VIDEO:
 		return video_streams;
-	case STREAM_AUDIO:
+	case StreamType::AUDIO:
 		return audio_streams;
-	case STREAM_SUBTITLE:
+	case StreamType::SUBTITLE:
 		return subtitle_streams;
 	}
 
@@ -618,62 +619,67 @@ int GoZenVideo::_seek_frame(int frame_nr) {
 }
 
 void GoZenVideo::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("open", "video_path"), &GoZenVideo::open);
+	// Enums
+	ClassDB::bind_integer_constant(get_class_static(), "StreamType", "VIDEO", VIDEO);
+	ClassDB::bind_integer_constant(get_class_static(), "StreamType", "AUDIO", AUDIO);
+	ClassDB::bind_integer_constant(get_class_static(), "StreamType", "SUBTITLE", SUBTITLE);
 
-	ClassDB::bind_method(D_METHOD("is_open"), &GoZenVideo::is_open);
+	// Methods
+	ClassDB::bind_method(D_METHOD("open", "video_path"), &GoZenVideo::open);
+	ClassDB::bind_method(D_METHOD("close"), &GoZenVideo::close);
 
 	ClassDB::bind_method(D_METHOD("seek_frame", "frame_nr"), &GoZenVideo::seek_frame);
 	ClassDB::bind_method(D_METHOD("next_frame", "skip"), &GoZenVideo::next_frame);
 
-	ClassDB::bind_method(D_METHOD("get_streams", "stream_type"), &GoZenVideo::get_streams);
-	ClassDB::bind_method(D_METHOD("get_stream_metadata", "stream_index"), &GoZenVideo::get_stream_metadata);
+	ClassDB::bind_method(D_METHOD("enable_debug"), &GoZenVideo::enable_debug);
+	ClassDB::bind_method(D_METHOD("disable_debug"), &GoZenVideo::disable_debug);
 
-	ClassDB::bind_method(D_METHOD("get_chapter_count"), &GoZenVideo::get_chapter_count);
-	ClassDB::bind_method(D_METHOD("get_chapter_start", "chapter_index"), &GoZenVideo::get_chapter_start);
-	ClassDB::bind_method(D_METHOD("get_chapter_end", "chapter_index"), &GoZenVideo::get_chapter_end);
-	ClassDB::bind_method(D_METHOD("get_chapter_metadata", "chapter_index"), &GoZenVideo::get_chapter_metadata);
-
-	ClassDB::bind_method(D_METHOD("set_sws_flag_bilinear"), &GoZenVideo::set_sws_flag_bilinear);
-	ClassDB::bind_method(D_METHOD("set_sws_flag_bicubic"), &GoZenVideo::set_sws_flag_bicubic);
+	// Getters
+	ClassDB::bind_method(D_METHOD("is_open"), &GoZenVideo::is_open);
+	ClassDB::bind_method(D_METHOD("get_path"), &GoZenVideo::get_path);
 
 	ClassDB::bind_method(D_METHOD("get_y_data"), &GoZenVideo::get_y_data);
 	ClassDB::bind_method(D_METHOD("get_u_data"), &GoZenVideo::get_u_data);
 	ClassDB::bind_method(D_METHOD("get_v_data"), &GoZenVideo::get_v_data);
 	ClassDB::bind_method(D_METHOD("get_a_data"), &GoZenVideo::get_a_data);
 
-	// Metadata getters
-	ClassDB::bind_method(D_METHOD("get_path"), &GoZenVideo::get_path);
-
 	ClassDB::bind_method(D_METHOD("get_resolution"), &GoZenVideo::get_resolution);
 	ClassDB::bind_method(D_METHOD("get_actual_resolution"), &GoZenVideo::get_actual_resolution);
-
 	ClassDB::bind_method(D_METHOD("get_width"), &GoZenVideo::get_width);
 	ClassDB::bind_method(D_METHOD("get_height"), &GoZenVideo::get_height);
 	ClassDB::bind_method(D_METHOD("get_actual_width"), &GoZenVideo::get_actual_width);
 	ClassDB::bind_method(D_METHOD("get_actual_height"), &GoZenVideo::get_actual_height);
-
 	ClassDB::bind_method(D_METHOD("get_padding"), &GoZenVideo::get_padding);
 	ClassDB::bind_method(D_METHOD("get_rotation"), &GoZenVideo::get_rotation);
 	ClassDB::bind_method(D_METHOD("get_interlaced"), &GoZenVideo::get_interlaced);
-	ClassDB::bind_method(D_METHOD("get_frame_count"), &GoZenVideo::get_frame_count);
-	ClassDB::bind_method(D_METHOD("get_current_frame"), &GoZenVideo::get_current_frame);
-
-	ClassDB::bind_method(D_METHOD("get_sar"), &GoZenVideo::get_sar);
-	ClassDB::bind_method(D_METHOD("get_framerate"), &GoZenVideo::get_framerate);
-
+	ClassDB::bind_method(D_METHOD("get_aspect_ratio"), &GoZenVideo::get_aspect_ratio);
 	ClassDB::bind_method(D_METHOD("get_pixel_format"), &GoZenVideo::get_pixel_format);
 	ClassDB::bind_method(D_METHOD("get_color_profile"), &GoZenVideo::get_color_profile);
-
 	ClassDB::bind_method(D_METHOD("get_has_alpha"), &GoZenVideo::get_has_alpha);
-
 	ClassDB::bind_method(D_METHOD("is_full_color_range"), &GoZenVideo::is_full_color_range);
 	ClassDB::bind_method(D_METHOD("is_using_sws"), &GoZenVideo::is_using_sws);
 
-	ClassDB::bind_method(D_METHOD("enable_debug"), &GoZenVideo::enable_debug);
-	ClassDB::bind_method(D_METHOD("disable_debug"), &GoZenVideo::disable_debug);
-	ClassDB::bind_method(D_METHOD("get_debug_enabled"), &GoZenVideo::get_debug_enabled);
-	ClassDB::bind_method(D_METHOD("set_headers", "headers_str"), &GoZenVideo::set_headers);
-	ClassDB::bind_method(D_METHOD("get_headers"), &GoZenVideo::get_headers);
+	ClassDB::bind_method(D_METHOD("get_duration_us"), &GoZenVideo::get_duration_us);
+	ClassDB::bind_method(D_METHOD("get_frame_count"), &GoZenVideo::get_frame_count);
+	ClassDB::bind_method(D_METHOD("get_current_frame"), &GoZenVideo::get_current_frame);
+	ClassDB::bind_method(D_METHOD("get_framerate"), &GoZenVideo::get_framerate);
 
-	ADD_PROPERTY(PropertyInfo(Variant::STRING, "headers"), "set_headers", "get_headers");
+	ClassDB::bind_method(D_METHOD("get_headers"), &GoZenVideo::get_headers);
+	ClassDB::bind_method(D_METHOD("get_streams", "stream_type"), &GoZenVideo::get_streams);
+	ClassDB::bind_method(D_METHOD("get_stream_metadata", "stream_index"), &GoZenVideo::get_stream_metadata);
+	ClassDB::bind_method(D_METHOD("get_chapter_count"), &GoZenVideo::get_chapter_count);
+	ClassDB::bind_method(D_METHOD("get_chapter_start", "chapter_index"), &GoZenVideo::get_chapter_start);
+	ClassDB::bind_method(D_METHOD("get_chapter_end", "chapter_index"), &GoZenVideo::get_chapter_end);
+	ClassDB::bind_method(D_METHOD("get_chapter_metadata", "chapter_index"), &GoZenVideo::get_chapter_metadata);
+
+	ClassDB::bind_method(D_METHOD("get_debug_enabled"), &GoZenVideo::get_debug_enabled);
+
+	// Setters
+	ClassDB::bind_method(D_METHOD("set_headers", "headers_str"), &GoZenVideo::set_headers);
+
+	ClassDB::bind_method(D_METHOD("set_sws_flag_bilinear"), &GoZenVideo::set_sws_flag_bilinear);
+	ClassDB::bind_method(D_METHOD("set_sws_flag_bicubic"), &GoZenVideo::set_sws_flag_bicubic);
+
+	// Propeties
+	ClassDB::add_property(get_class_static(), PropertyInfo(Variant::STRING, "headers"), "set_headers", "get_headers");
 }

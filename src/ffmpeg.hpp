@@ -32,7 +32,6 @@ extern "C" {
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
-
 using namespace godot;
 
 
@@ -47,6 +46,6 @@ class FFmpeg {
 						 AVPacket* packet);
 	static enum AVPixelFormat get_hw_format(const enum AVPixelFormat* pix_fmt, enum AVPixelFormat* hw_pix_fmt);
 
-	static int read_buffer_packet(void* opaque, uint8_t* buffer, int buffer_size);
-	static int64_t seek_buffer(void* opaque, int64_t offset, int where);
+	static int read_buffer_packet(void* opaque, uint8_t* buffer, int buffer_size);	// For `res://` videos.
+	static int64_t seek_buffer(void* opaque, int64_t offset, int where);			// For `res://` videos.
 };

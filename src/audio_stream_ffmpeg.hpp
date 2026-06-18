@@ -15,6 +15,32 @@ using namespace godot;
 
 class AudioStreamFFmpeg : public AudioStream {
 	GDCLASS(AudioStreamFFmpeg, AudioStream);
+	friend class AudioStreamFFmpegPlayback;
+
+  public:
+	AudioStreamFFmpeg() = default;
+	~AudioStreamFFmpeg() { close(); }
+
+	int open(const String& path, int stream_index = -1);
+	void close();
+
+	inline bool is_open() const { return loaded; }
+	
+	void set_use_icy(bool value) { use_icy = value; }
+	bool get_use_icy() const { return use_icy; }
+	Dictionary get_icy_headers();
+	String get_stream_title();
+	Dictionary get_tags();
+	void set_headers(const String& headers_str) { headers = headers_str; }
+	String get_headers() const { return headers; }
+
+	// Overrides of AudioStream
+	double _get_length() const override { return length; }
+	bool _is_monophonic() const override { return !stereo; }
+	Ref<AudioStreamPlayback> _instantiate_playback() const override;
+
+  protected:
+	static void _bind_methods();
 
   private:
 	// FFmpeg classes.
@@ -25,7 +51,7 @@ class AudioStreamFFmpeg : public AudioStream {
 	AVStream* av_stream = nullptr;
 
 	AVChannelLayout ch_layout;
-	BufferData buffer_data; // Used for res:// and user://
+	BufferData buffer_data;		// Used for res:// and user://
 	PackedByteArray file_buffer;
 
 	bool loaded = false;
@@ -50,34 +76,42 @@ class AudioStreamFFmpeg : public AudioStream {
 		UtilityFunctions::printerr("GoZenAudioStream: ", message, "!");
 		return true;
 	}
-
-  public:
-	AudioStreamFFmpeg() = default;
-	~AudioStreamFFmpeg();
-
-	int open(const String& path, int stream_index = -1);
-	void close();
-	inline bool is_open() const { return loaded; }
-
-	double _get_length() const override { return length; }
-	bool _is_monophonic() const override { return !stereo; }
-
-	Ref<AudioStreamPlayback> _instantiate_playback() const override;
-	void set_use_icy(bool value) { use_icy = value; }
-	bool get_use_icy() const { return use_icy; }
-	Dictionary get_icy_headers();
-	String get_stream_title();
-	Dictionary get_tags();
-	void set_headers(const String& headers_str) { headers = headers_str; }
-	String get_headers() const { return headers; }
-
-  protected:
-	static void _bind_methods();
-	friend class AudioStreamFFmpegPlayback;
 };
 
 class AudioStreamFFmpegPlayback : public AudioStreamPlaybackResampled {
 	GDCLASS(AudioStreamFFmpegPlayback, AudioStreamPlaybackResampled);
+
+	friend class AudioStreamFFmpeg;
+
+  public:
+	AudioStreamFFmpegPlayback() {
+		buffer = new sint16_stereo[buffer_len];
+
+		if (!av_packet)
+			av_packet = make_unique_ffmpeg<AVPacket, AVPacketDeleter>(av_packet_alloc());
+		if (!av_frame)
+			av_frame = make_unique_ffmpeg<AVFrame, AVFrameDeleter>(av_frame_alloc());
+		if (!av_decoded_frame)
+			av_decoded_frame = make_unique_ffmpeg<AVFrame, AVFrameDeleter>(av_frame_alloc());
+	}
+	~AudioStreamFFmpegPlayback() override { delete[] buffer; }
+
+	bool fill_buffer();
+
+	// Overrides of AudioStreamPlaybackResampled
+	inline float _get_stream_sampling_rate() const override { return mix_rate; }
+	int32_t _mix_resampled(AudioFrame* p_buffer, int32_t p_frames) override;
+
+	// Overrides of AudioStreamPlayback -> AudioStreamPlaybackResampled
+	inline int32_t _get_loop_count() const override { return 0; }
+	inline double _get_playback_position() const override { return float(mixed) / float(mix_rate); };
+	inline bool _is_playing() const override { return is_playing; };
+	void _seek(double p_position) override;
+	void _start(double p_from_pos) override;
+	inline void _stop() override { is_playing = false; };
+
+  protected:
+	static inline void _bind_methods() {}
 
   private:
 	Ref<AudioStreamFFmpeg> audio_stream_ffmpeg;
@@ -101,32 +135,4 @@ class AudioStreamFFmpegPlayback : public AudioStreamPlaybackResampled {
 
 	Dictionary icy_headers;
 	String stream_title;
-
-  public:
-	AudioStreamFFmpegPlayback() {
-		buffer = new sint16_stereo[buffer_len];
-
-		if (!av_packet)
-			av_packet = make_unique_ffmpeg<AVPacket, AVPacketDeleter>(av_packet_alloc());
-		if (!av_frame)
-			av_frame = make_unique_ffmpeg<AVFrame, AVFrameDeleter>(av_frame_alloc());
-		if (!av_decoded_frame)
-			av_decoded_frame = make_unique_ffmpeg<AVFrame, AVFrameDeleter>(av_frame_alloc());
-	}
-	~AudioStreamFFmpegPlayback() override { delete[] buffer; }
-
-	bool fill_buffer();
-
-	void _start(double p_from_pos) override;
-	void _stop() override;
-	bool _is_playing() const override;
-	int32_t _get_loop_count() const override { return 0; }
-	double _get_playback_position() const override;
-	void _seek(double p_position) override;
-	int32_t _mix_resampled(AudioFrame* p_buffer, int32_t p_frames) override;
-	float _get_stream_sampling_rate() const override { return mix_rate; }
-
-  protected:
-	static inline void _bind_methods() {}
-	friend class AudioStreamFFmpeg;
 };

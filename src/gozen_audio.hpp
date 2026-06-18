@@ -13,11 +13,17 @@
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
-
 using namespace godot;
+
 
 class GoZenAudio : public Resource {
 	GDCLASS(GoZenAudio, Resource);
+
+  public:
+	static PackedByteArray get_audio_data(String file_path, int stream_index = -1, bool stereo = true);
+
+  protected:
+	static void _bind_methods();
 
   private:
 	static PackedByteArray _get_audio(AVFormatContext*& format_ctx, AVStream*& stream, bool stereo);
@@ -27,10 +33,4 @@ class GoZenAudio : public Resource {
 		UtilityFunctions::printerr("GoZenAudio: ", message, "!");
 		return true;
 	}
-
-  public:
-	static PackedByteArray get_audio_data(String file_path, int stream_index = -1, bool stereo = true);
-
-  protected:
-	static void _bind_methods();
 };

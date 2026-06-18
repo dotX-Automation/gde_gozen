@@ -1,29 +1,5 @@
 #include "audio_stream_ffmpeg.hpp"
 
-#include <cstdint>
-
-AudioStreamFFmpeg::~AudioStreamFFmpeg() {
-	_log("Closing video file at path: " + file_path);
-
-	if (!loaded) {
-		return;
-	}
-
-	memdelete(mutex);
-
-	loaded = false;
-	av_stream = nullptr;
-	swr_ctx.reset();
-
-	if (av_codec_ctx) {
-		avcodec_flush_buffers(av_codec_ctx.get());
-	}
-	av_codec_ctx.reset();
-	av_format_ctx.reset();
-
-	avio_ctx.reset();
-	file_buffer.clear();
-}
 
 int AudioStreamFFmpeg::open(const String& path, int stream_index) {
 	mutex = memnew(Mutex);
@@ -196,6 +172,31 @@ int AudioStreamFFmpeg::open(const String& path, int stream_index) {
 	return 0;
 }
 
+
+void AudioStreamFFmpeg::close() {
+	_log("Closing audio file at path: " + file_path);
+
+	if (!loaded) {
+		return;
+	}
+
+	memdelete(mutex);
+
+	loaded = false;
+	av_stream = nullptr;
+	swr_ctx.reset();
+
+	if (av_codec_ctx) {
+		avcodec_flush_buffers(av_codec_ctx.get());
+	}
+	av_codec_ctx.reset();
+	av_format_ctx.reset();
+
+	avio_ctx.reset();
+	file_buffer.clear();
+}
+
+
 Dictionary AudioStreamFFmpeg::get_icy_headers() {
 	if (!use_icy) {
 		return Dictionary();
@@ -237,6 +238,7 @@ Dictionary AudioStreamFFmpeg::get_icy_headers() {
 	return Dictionary();
 }
 
+
 String AudioStreamFFmpeg::get_stream_title() {
 	if (!use_icy) {
 		return String();
@@ -275,6 +277,7 @@ String AudioStreamFFmpeg::get_stream_title() {
 	return String();
 }
 
+
 Dictionary AudioStreamFFmpeg::get_tags() {
 	Dictionary tags;
 	mutex->lock();
@@ -294,6 +297,7 @@ Dictionary AudioStreamFFmpeg::get_tags() {
 	return tags;
 }
 
+
 Ref<AudioStreamPlayback> AudioStreamFFmpeg::_instantiate_playback() const {
 	if (!loaded) {
 		return nullptr;
@@ -308,16 +312,12 @@ Ref<AudioStreamPlayback> AudioStreamFFmpeg::_instantiate_playback() const {
 	return playback;
 }
 
+
 void AudioStreamFFmpegPlayback::_start(double p_from_pos) {
 	is_playing = true;
 	_seek(p_from_pos);
 }
 
-void AudioStreamFFmpegPlayback::_stop() { is_playing = false; }
-
-bool AudioStreamFFmpegPlayback::_is_playing() const { return is_playing; }
-
-double AudioStreamFFmpegPlayback::_get_playback_position() const { return float(mixed) / float(mix_rate); }
 
 void AudioStreamFFmpegPlayback::_seek(double p_position) {
 	audio_stream_ffmpeg->mutex->lock();
@@ -513,13 +513,11 @@ bool AudioStreamFFmpegPlayback::fill_buffer() {
 }
 
 void AudioStreamFFmpeg::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("__instantiate_playback"), &AudioStreamFFmpeg::_instantiate_playback);
-
+	// Methods
 	ClassDB::bind_method(D_METHOD("open", "path", "stream_index"), &AudioStreamFFmpeg::open, DEFVAL(-1));
+	ClassDB::bind_method(D_METHOD("close"), &AudioStreamFFmpeg::close);
 
-	ClassDB::bind_method(D_METHOD("set_use_icy", "value"), &AudioStreamFFmpeg::set_use_icy);
-	ClassDB::bind_method(D_METHOD("set_headers", "headers_str"), &AudioStreamFFmpeg::set_headers);
-
+	// Getters
 	ClassDB::bind_method(D_METHOD("is_open"), &AudioStreamFFmpeg::is_open);
 	ClassDB::bind_method(D_METHOD("get_use_icy"), &AudioStreamFFmpeg::get_use_icy);
 	ClassDB::bind_method(D_METHOD("get_headers"), &AudioStreamFFmpeg::get_headers);
@@ -527,6 +525,11 @@ void AudioStreamFFmpeg::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_stream_title"), &AudioStreamFFmpeg::get_stream_title);
 	ClassDB::bind_method(D_METHOD("get_tags"), &AudioStreamFFmpeg::get_tags);
 
-	ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_icy"), "set_use_icy", "get_use_icy");
-	ADD_PROPERTY(PropertyInfo(Variant::STRING, "headers"), "set_headers", "get_headers");
+	// Setters
+	ClassDB::bind_method(D_METHOD("set_use_icy", "value"), &AudioStreamFFmpeg::set_use_icy);
+	ClassDB::bind_method(D_METHOD("set_headers", "headers_str"), &AudioStreamFFmpeg::set_headers);
+
+	// Propeties
+	ClassDB::add_property(get_class_static(), PropertyInfo(Variant::BOOL, "use_icy"), "set_use_icy", "get_use_icy");
+	ClassDB::add_property(get_class_static(), PropertyInfo(Variant::STRING, "headers"), "set_headers", "get_headers");
 }

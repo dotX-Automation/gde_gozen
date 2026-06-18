@@ -1,12 +1,12 @@
 #include "ffmpeg.hpp"
 
 
-
 void FFmpeg::print_av_error(const char* message, int error) {
 	char l_error_buffer[AV_ERROR_MAX_STRING_SIZE];
 	av_strerror(error, l_error_buffer, sizeof(l_error_buffer));
 	UtilityFunctions::printerr(message, l_error_buffer);
 }
+
 
 void FFmpeg::enable_multithreading(AVCodecContext* codec_ctx, const AVCodec* codec) {
 	codec_ctx->thread_count = OS::get_singleton()->get_processor_count() - 1;
@@ -18,6 +18,7 @@ void FFmpeg::enable_multithreading(AVCodecContext* codec_ctx, const AVCodec* cod
 	else
 		codec_ctx->thread_count = 1; // Don't use multithreading
 }
+
 
 int FFmpeg::get_frame(AVFormatContext* format_ctx, AVCodecContext* codec_ctx, int stream_id, AVFrame* frame,
 					  AVPacket* packet) {
@@ -50,6 +51,7 @@ int FFmpeg::get_frame(AVFormatContext* format_ctx, AVCodecContext* codec_ctx, in
 	return response;
 }
 
+
 enum AVPixelFormat FFmpeg::get_hw_format(const enum AVPixelFormat* pix_fmt, enum AVPixelFormat* hw_pix_fmt) {
 	const enum AVPixelFormat* p;
 
@@ -61,7 +63,7 @@ enum AVPixelFormat FFmpeg::get_hw_format(const enum AVPixelFormat* pix_fmt, enum
 	return AV_PIX_FMT_NONE;
 }
 
-// For `res://` videos.
+
 int FFmpeg::read_buffer_packet(void* opaque, uint8_t* buffer, int buffer_size) {
 	BufferData* buffer_data = (BufferData*)opaque;
 	size_t remaining = buffer_data->size - buffer_data->offset;
@@ -77,7 +79,7 @@ int FFmpeg::read_buffer_packet(void* opaque, uint8_t* buffer, int buffer_size) {
 	return (int)new_size;
 }
 
-// For `res://` videos.
+
 int64_t FFmpeg::seek_buffer(void* opaque, int64_t offset, int where) {
 	BufferData* buffer_data = (BufferData*)opaque;
 	int64_t new_offset = 0;

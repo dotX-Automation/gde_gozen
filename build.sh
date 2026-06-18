@@ -45,45 +45,43 @@ export ANDROID_NDK_ROOT="$HOME/.android-sdk/ndk/28.2.13676358"
 
 # ==== BUILD ====
 
-scons -c
-
 # Linux x86_64 Debug
 printf "1\n1\n1\n1\n1\n" | python3 build.py
 
 # Linux x86_64 Release
-printf "1\n1\n2\n1\n2\n" | python3 build.py
+printf "1\n1\n2\n2\n2\n" | python3 build.py
 
 # Linux arm64 Debug
 printf "1\n2\n1\n1\n1\n" | python3 build.py
 
 # Linux arm64 Release
-printf "1\n2\n2\n1\n2\n" | python3 build.py
+printf "1\n2\n2\n2\n2\n" | python3 build.py
 
 
 # Windows x86_64 Debug
 printf "2\n1\n1\n1\n1\n" | python3 build.py
 
 # Windows x86_64 Release
-printf "2\n1\n2\n1\n2\n" | python3 build.py
+printf "2\n1\n2\n2\n2\n" | python3 build.py
 
 # Windows x86_32 Debug
 printf "2\n2\n1\n1\n1\n" | python3 build.py
 
 # Windows x86_32 Release
-printf "2\n2\n2\n1\n2\n" | python3 build.py
+printf "2\n2\n2\n2\n2\n" | python3 build.py
 
 
 # Android arm64 Debug
 printf "4\n1\n1\n1\n1\n" | python3 build.py
 
 # Android arm64 Release
-printf "4\n1\n2\n1\n2\n" | python3 build.py
+printf "4\n1\n2\n2\n2\n" | python3 build.py
 
 # Android armv7a Debug
 printf "4\n2\n1\n1\n1\n" | python3 build.py
 
 # Android armv7a Release
-printf "4\n2\n2\n1\n2\n" | python3 build.py
+printf "4\n2\n2\n2\n2\n" | python3 build.py
 
 # ==== CLEAN ====
 
