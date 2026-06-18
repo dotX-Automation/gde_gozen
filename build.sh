@@ -85,5 +85,4 @@ printf "4\n2\n2\n2\n2\n" | python3 build.py
 
 # ==== CLEAN ====
 
-scons -c
 rm -rf "$TOOLS_DIR"
