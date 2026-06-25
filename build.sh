@@ -85,4 +85,5 @@ printf "4\n2\n2\n2\n2\n" | python3 build.py
 
 # ==== CLEAN ====
 
+find src -name "*.os" -type f -delete
 rm -rf "$TOOLS_DIR"
