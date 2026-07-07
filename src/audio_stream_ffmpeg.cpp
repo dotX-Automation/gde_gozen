@@ -1,535 +1,273 @@
 #include "audio_stream_ffmpeg.hpp"
 
+size_t AudioSampleRing::write(const AudioSampleS16Stereo* src, size_t n) {
+	const size_t to_write = std::min(n, space());
+	const size_t tail = (_head + _count) % _data.size(); // first free slot
+	const size_t first = std::min(to_write, _data.size() - tail);
+	std::memcpy(&_data[tail], src, first * sizeof(AudioSampleS16Stereo));
+	if (to_write > first)
+		std::memcpy(&_data[0], src + first, (to_write - first) * sizeof(AudioSampleS16Stereo));
+	_count += to_write;
+	return to_write;
+}
 
-int AudioStreamFFmpeg::open(const String& path, int stream_index) {
-	mutex = memnew(Mutex);
-	mutex->lock();
-	AVFormatContext* temp_format_ctx = nullptr;
-	AVDictionary* options = nullptr;
+size_t AudioSampleRing::read(AudioSampleS16Stereo* dst, size_t n) {
+	const size_t to_read = std::min(n, _count);
+	const size_t first = std::min(to_read, _data.size() - _head);
+	std::memcpy(dst, &_data[_head], first * sizeof(AudioSampleS16Stereo));
+	if (to_read > first)
+		std::memcpy(dst + first, &_data[0], (to_read - first) * sizeof(AudioSampleS16Stereo));
+	_head = (_head + to_read) % _data.size();
+	_count -= to_read;
+	return to_read;
+}
+
+Error AudioStreamFFmpeg::open(const String& path, int stream_index) {
+	close(); // idempotent; safe to re-open
+	live_failed.store(false, std::memory_order_relaxed);
+
 	file_path = path;
-
-	if (use_icy) {
-		av_dict_set(&options, "icy", "1", 0);
-	}
-
-	if (path.begins_with("rtsp://")) {
-		av_dict_set(&options, "rtsp_transport", "tcp", 0);
-	}
-
-	if (headers != "") {
-		av_dict_set(&options, "headers", headers.utf8().get_data(), 0);
-	}
-
-	if (path.begins_with("res://") || path.begins_with("user://")) {
-		temp_format_ctx = avformat_alloc_context();
+	if (path.begins_with("res://") || path.begins_with("user://"))
 		file_buffer = FileAccess::get_file_as_bytes(path);
 
-		if (!temp_format_ctx) {
-			if (options) {
-				av_dict_free(&options);
-			}
-			mutex->unlock();
-			return _log_err("Failed to allocate AVFormatContext");
-		} else if (file_buffer.is_empty()) {
-			if (options) {
-				av_dict_free(&options);
-			}
-			avformat_free_context(temp_format_ctx);
-			mutex->unlock();
-			return _log_err("Couldn't load file from res:// or user://");
-		}
+	AVChannelLayout stereo_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
+	arm_deadline(interrupt, network_timeout_us);
+	bool ok = open_audio_pipeline(file_path, file_buffer, headers, stream_index, stereo_layout,
+								  AV_SAMPLE_FMT_S16, 0, false, probe_pipeline, &interrupt);
 
-		buffer_data.ptr = file_buffer.ptrw();
-		buffer_data.size = file_buffer.size();
-		buffer_data.offset = 0;
+	// Clear on every path: the opened format_ctx's interrupt_callback.opaque points at this member,
+	// and a prior still-alive playback may share it (Ref<AudioStreamFFmpeg> keeps &interrupt alive
+	// across re-opens) — a leaked armed deadline would abort its steady-state reads. Steady-state
+	// fill() reads must never be interrupted; aborted is never set here, so the callback becomes a
+	// permanent no-op once the deadline is cleared.
+	interrupt.deadline_us.store(0, std::memory_order_relaxed);
+	if (!ok)
+		return FAILED; // open_audio_pipeline already logged
 
-		const int IO_BUFFER_SIZE = 8 * 1024 * 1024; // 8 MB
-		unsigned char* avio_ctx_buffer = (unsigned char*)av_malloc(IO_BUFFER_SIZE);
-		avio_ctx = make_unique_ffmpeg<AVIOContext, AVIOContextDeleter>(
-			avio_alloc_context(avio_ctx_buffer, IO_BUFFER_SIZE, 0, &buffer_data, &FFmpeg::read_buffer_packet, nullptr,
-							   &FFmpeg::seek_buffer));
+	AVStream* s = probe_pipeline.stream;
+	if (s->duration != AV_NOPTS_VALUE)
+		length = s->duration * av_q2d(s->time_base);
+	else if (probe_pipeline.format_ctx->duration != AV_NOPTS_VALUE)
+		length = probe_pipeline.format_ctx->duration / (double)AV_TIME_BASE;
+	else
+		length = 0;
 
-		if (!avio_ctx) {
-			if (options) {
-				av_dict_free(&options);
-			}
-			av_free(avio_ctx_buffer);
-			mutex->unlock();
-			return _log_err("Failed to create avio_ctx");
-		}
+	sample_rate = probe_pipeline.sample_rate;
+	stereo = probe_pipeline.stereo;
+	audio_stream_index = s->index;
 
-		temp_format_ctx->pb = avio_ctx.get();
-
-		if (avformat_open_input(&temp_format_ctx, nullptr, nullptr, nullptr) != 0) {
-			if (options) {
-				av_dict_free(&options);
-			}
-			mutex->unlock();
-			return _log_err("Failed to open input from memory buffer");
-		}
-	} else if (avformat_open_input(&temp_format_ctx, path.utf8(), NULL, &options)) {
-		if (options) {
-			av_dict_free(&options);
-		}
-		mutex->unlock();
-		return _log_err("Couldn't open file");
-	}
-	if (options) {
-		av_dict_free(&options);
-	}
-
-	av_format_ctx = make_unique_ffmpeg<AVFormatContext, AVFormatCtxInputDeleter>(temp_format_ctx);
-	if (avformat_find_stream_info(av_format_ctx.get(), NULL)) {
-		mutex->unlock();
-		return _log_err("Couldn't find stream info");
-	}
-
-	if (stream_index == -1) {
-		for (int i = 0; i < av_format_ctx->nb_streams; i++) {
-			AVCodecParameters* params = av_format_ctx->streams[i]->codecpar;
-
-			if (params->codec_type == AVMEDIA_TYPE_AUDIO) {
-				av_stream = av_format_ctx->streams[i];
-				break;
-			}
-		}
-	} else if (stream_index >= 0 && stream_index < av_format_ctx->nb_streams) {
-		AVCodecParameters* av_codec_params = av_format_ctx->streams[stream_index]->codecpar;
-
-		if (av_codec_params->codec_type == AVMEDIA_TYPE_AUDIO)
-			av_stream = av_format_ctx->streams[stream_index];
-	} else {
-		mutex->unlock();
-		return _log_err("Invalid stream index");
-	}
-
-	if (!av_stream) {
-		mutex->unlock();
-		return _log_err("No audio stream found");
-	}
-
-	// Getting the length (average).
-	if (av_stream->duration != AV_NOPTS_VALUE) {
-		length = av_stream->duration * av_q2d(av_stream->time_base);
-	} else if (av_format_ctx->duration != AV_NOPTS_VALUE) {
-		length = av_format_ctx->duration / (double)AV_TIME_BASE;
-	}
-
-	// Discard all non-audio streams.
-	for (int i = 0; i < av_format_ctx->nb_streams; i++) {
-		AVCodecParameters* av_codec_params = av_format_ctx->streams[i]->codecpar;
-
-		if (!avcodec_find_decoder(av_codec_params->codec_id)) {
-			if (i != stream_index)
-				av_format_ctx->streams[i]->discard = AVDISCARD_ALL;
-		}
-	}
-
-	if (!av_stream) {
-		mutex->unlock();
-		return _log_err("No audio stream found");
-	}
-
-	const AVCodec* codec = avcodec_find_decoder(av_stream->codecpar->codec_id);
-	if (!codec) {
-		mutex->unlock();
-		return _log_err("Couldn't find decoder");
-	}
-
-	av_codec_ctx = make_unique_ffmpeg<AVCodecContext, AVCodecCtxDeleter>(avcodec_alloc_context3(codec));
-	if (!av_codec_ctx) {
-		mutex->unlock();
-		return _log_err("Couldn't allocate codec context");
-	} else if (avcodec_parameters_to_context(av_codec_ctx.get(), av_stream->codecpar)) {
-		mutex->unlock();
-		return _log_err("Couldn't initialize codec context");
-	}
-
-	av_codec_ctx->request_sample_fmt = AV_SAMPLE_FMT_S16;
-	if (avcodec_open2(av_codec_ctx.get(), codec, nullptr)) {
-		mutex->unlock();
-		return _log_err("Couldn't open audio codec");
-	}
-
-	stereo = av_codec_ctx->ch_layout.nb_channels >= 2;
-	ch_layout = av_codec_ctx->ch_layout;
-	sample_rate = av_codec_ctx->sample_rate;
-	bytes_per_sample = av_get_bytes_per_sample(AV_SAMPLE_FMT_S16);
-
-	AVChannelLayout out_ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
-
-	SwrContext* temp_swr_ctx = nullptr;
-	int response = swr_alloc_set_opts2(&temp_swr_ctx, &out_ch_layout, AV_SAMPLE_FMT_S16, sample_rate,
-									   &av_codec_ctx->ch_layout, av_codec_ctx->sample_fmt, sample_rate, 0, nullptr);
-	swr_ctx = make_unique_ffmpeg<SwrContext, SwrCtxDeleter>(temp_swr_ctx);
-	if (response < 0 || swr_init(swr_ctx.get()) < 0) {
-		mutex->unlock();
-		return _log_err("Failed to initialize SWR");
-	}
-
+	probe_available = true;
 	loaded = true;
-	mutex->unlock();
-	return 0;
+	return OK;
 }
-
 
 void AudioStreamFFmpeg::close() {
+	if (!loaded && !probe_available)
+		return;
+
 	_log("Closing audio file at path: " + file_path);
 
-	if (!loaded) {
-		return;
+	{
+		std::lock_guard<std::mutex> lock(probe_mutex);
+		probe_pipeline = AudioDecodePipeline{};
+		probe_available = false;
 	}
-
-	memdelete(mutex);
 
 	loaded = false;
-	av_stream = nullptr;
-	swr_ctx.reset();
-
-	if (av_codec_ctx) {
-		avcodec_flush_buffers(av_codec_ctx.get());
-	}
-	av_codec_ctx.reset();
-	av_format_ctx.reset();
-
-	avio_ctx.reset();
-	file_buffer.clear();
+	length = 0;
+	audio_stream_index = -1;
 }
 
-
-Dictionary AudioStreamFFmpeg::get_icy_headers() {
-	if (!use_icy) {
-		return Dictionary();
-	}
-
-	mutex->lock();
-	if (!av_format_ctx) {
-		mutex->unlock();
-		return Dictionary();
-	}
-
-	char* metadata = nullptr;
-	av_opt_get(av_format_ctx.get(), "icy_metadata_headers", AV_OPT_SEARCH_CHILDREN, (uint8_t**)&metadata);
-	if (metadata) {
-		if (String(metadata) == icy_headers_cache && !icy_headers_cache.is_empty()) {
-			av_freep(&metadata);
-			metadata = nullptr;
-			mutex->unlock();
-			return icy_headers_cache;
-		}
-
-		PackedStringArray headers = String(metadata).split("\n");
-		Dictionary new_headers;
-		for (int i = 0; i < headers.size(); i++) {
-			PackedStringArray key_value = headers[i].split(": ");
-			if (key_value.size() == 2) {
-				new_headers[key_value[0].replace("icy-", "stream_")] = key_value[1];
-			}
-		}
-
-		av_freep(&metadata);
-		metadata = nullptr;
-		icy_headers_cache = new_headers;
-		mutex->unlock();
-		return new_headers;
-	}
-
-	mutex->unlock();
-	return Dictionary();
+bool AudioStreamFFmpeg::take_probe_pipeline(AudioDecodePipeline& out) {
+	std::lock_guard<std::mutex> lock(probe_mutex);
+	if (!probe_available || !probe_pipeline.valid())
+		return false;
+	out = std::move(probe_pipeline);
+	probe_pipeline = AudioDecodePipeline{};
+	probe_available = false;
+	return true;
 }
-
-
-String AudioStreamFFmpeg::get_stream_title() {
-	if (!use_icy) {
-		return String();
-	}
-
-	mutex->lock();
-	if (!av_format_ctx) {
-		mutex->unlock();
-		return String();
-	}
-
-	char* metadata = nullptr;
-	av_opt_get(av_format_ctx.get(), "icy_metadata_packet", AV_OPT_SEARCH_CHILDREN, (uint8_t**)&metadata);
-	if (metadata) {
-		if (String(metadata) == icy_packet && !stream_title_cache.is_empty()) {
-			av_freep(&metadata);
-			metadata = nullptr;
-			mutex->unlock();
-			return stream_title_cache["StreamTitle"];
-		}
-		PackedStringArray parts = String(metadata).split(";");
-		for (int i = 0; i < parts.size(); i++) {
-			PackedStringArray key_value = parts[i].split("=");
-			if (key_value.size() == 2) {
-				stream_title_cache[String(key_value[0])] = String(key_value[1]).lstrip("'").rstrip("'");
-			}
-		}
-		icy_packet = String(metadata);
-		av_freep(&metadata);
-		metadata = nullptr;
-		mutex->unlock();
-		return stream_title_cache["StreamTitle"];
-	}
-
-	mutex->unlock();
-	return String();
-}
-
-
-Dictionary AudioStreamFFmpeg::get_tags() {
-	Dictionary tags;
-	mutex->lock();
-	if (!av_format_ctx) {
-		mutex->unlock();
-		return tags;
-	}
-
-	AVDictionary* metadata = av_format_ctx.get()->metadata;
-	AVDictionaryEntry* tag = nullptr;
-
-	while ((tag = av_dict_get(metadata, "", tag, AV_DICT_IGNORE_SUFFIX))) {
-		tags[String(tag->key).replace("icy-", "stream_")] = String(tag->value);
-	}
-
-	mutex->unlock();
-	return tags;
-}
-
 
 Ref<AudioStreamPlayback> AudioStreamFFmpeg::_instantiate_playback() const {
-	if (!loaded) {
+	if (!loaded)
 		return nullptr;
-	}
 
-	auto playback = memnew(AudioStreamFFmpegPlayback);
-	playback->audio_stream_ffmpeg = Ref<AudioStreamFFmpeg>(const_cast<AudioStreamFFmpeg*>(this));
+	Ref<AudioStreamFFmpegPlayback> playback;
+	playback.instantiate();
+	playback->stream = Ref<AudioStreamFFmpeg>(const_cast<AudioStreamFFmpeg*>(this));
 	playback->mix_rate = sample_rate;
 	playback->stereo = stereo;
-	playback->fill_buffer();
-
 	return playback;
 }
 
+AudioStreamFFmpegPlayback::~AudioStreamFFmpegPlayback() {}
 
-void AudioStreamFFmpegPlayback::_start(double p_from_pos) {
-	is_playing = true;
-	_seek(p_from_pos);
+bool AudioStreamFFmpegPlayback::ensure_open() {
+	if (pipe.valid())
+		return true;
+	if (stream.is_null())
+		return false;
+
+	if (stream->take_probe_pipeline(pipe) && pipe.valid()) {
+		// Adopted the probe pipeline (opened with the stream's interrupt): re-point its callback at
+		// this playback's own interrupt so steady-state reads are interruptible and per-playback owned.
+		install_interrupt_callback(pipe.format_ctx.get(), &playback_interrupt);
+	} else {
+		// Self-open fallback: install our interrupt from the start and arm a deadline so a dead
+		// reopen can't wedge the audio thread during _start.
+		AVChannelLayout stereo_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
+		arm_deadline(playback_interrupt, stream->network_timeout_us);
+		bool ok = open_audio_pipeline(stream->file_path, stream->file_buffer, stream->headers,
+									  stream->audio_stream_index, stereo_layout, AV_SAMPLE_FMT_S16, 0, false, pipe,
+									  &playback_interrupt);
+		playback_interrupt.deadline_us.store(0, std::memory_order_relaxed); // clear; steady-state re-arms per mix
+		if (!ok)
+			return false;
+	}
+
+	mix_rate = pipe.sample_rate;
+	stereo = pipe.stereo;
+	ring.reset((size_t)pipe.sample_rate); // exactly 1 second
+	return true;
 }
 
+bool AudioStreamFFmpegPlayback::fill() {
+	if (!pipe.valid())
+		return false;
 
-void AudioStreamFFmpegPlayback::_seek(double p_position) {
-	audio_stream_ffmpeg->mutex->lock();
-	int response = 0;
-	buffer_fill = 0;
-
-	int64_t target_ts =
-		av_rescale_q(p_position * AV_TIME_BASE, AV_TIME_BASE_Q, audio_stream_ffmpeg->av_stream->time_base);
-
-	avcodec_flush_buffers(audio_stream_ffmpeg->av_codec_ctx.get());
-	if (int err = av_seek_frame(audio_stream_ffmpeg->av_format_ctx.get(), audio_stream_ffmpeg->av_stream->index,
-								target_ts, AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_FRAME)) {
-		FFmpeg::print_av_error("audio_decoder: Error while seeking", err);
-		audio_stream_ffmpeg->mutex->unlock();
-		return;
+	int converted = decode_audio_frame(pipe, av_frame.get(), av_packet.get(), decode_buf);
+	if (converted == AVERROR_EXIT) { // interrupted read: live socket stalled/dead (not finite EOF)
+		stream->live_failed.store(true, std::memory_order_relaxed);
+		return false;
 	}
+	if (converted < 0)
+		return false; // EOF or error
+	if (converted == 0)
+		return true; // resampler buffering; nothing to write this call
 
-	avcodec_flush_buffers(audio_stream_ffmpeg->av_codec_ctx.get());
-
-	bool found_target = false;
-	while (!found_target) {
-		if (FFmpeg::get_frame(audio_stream_ffmpeg->av_format_ctx.get(), audio_stream_ffmpeg->av_codec_ctx.get(),
-							  audio_stream_ffmpeg->av_stream->index, av_frame.get(), av_packet.get())) {
-			audio_stream_ffmpeg->_log("End of file during seek");
-			audio_stream_ffmpeg->mutex->unlock();
-			return;
-		}
-
-		int64_t frame_pts = av_frame->pts;
-		int64_t frame_duration = av_frame->nb_samples;
-
-		if (frame_pts + frame_duration >= target_ts) {
-			found_target = true;
-
-			av_decoded_frame->format = AV_SAMPLE_FMT_S16;
-			av_decoded_frame->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
-			av_decoded_frame->sample_rate = av_frame->sample_rate;
-			av_decoded_frame->nb_samples =
-				swr_get_out_samples(audio_stream_ffmpeg->swr_ctx.get(), av_frame->nb_samples);
-
-			if (av_frame_get_buffer(av_decoded_frame.get(), 0) < 0) {
-				FFmpeg::print_av_error("Couldn't create new frame for swr!", response);
-				av_frame_unref(av_frame.get());
-				av_frame_unref(av_decoded_frame.get());
-				audio_stream_ffmpeg->mutex->unlock();
-				return;
-			}
-
-			if (swr_config_frame(audio_stream_ffmpeg->swr_ctx.get(), av_decoded_frame.get(), av_frame.get()) < 0) {
-				FFmpeg::print_av_error("Couldn't config the audio frame!", response);
-				av_frame_unref(av_frame.get());
-				av_frame_unref(av_decoded_frame.get());
-				audio_stream_ffmpeg->mutex->unlock();
-				return;
-			}
-
-			if (swr_convert_frame(audio_stream_ffmpeg->swr_ctx.get(), av_decoded_frame.get(), av_frame.get()) < 0) {
-				FFmpeg::print_av_error("Couldn't convert the audio frame!", response);
-				av_frame_unref(av_frame.get());
-				av_frame_unref(av_decoded_frame.get());
-				audio_stream_ffmpeg->mutex->unlock();
-				return;
-			}
-
-			size_t byte_size = av_decoded_frame->nb_samples * audio_stream_ffmpeg->bytes_per_sample;
-			byte_size *= 2;
-
-			std::memcpy(buffer, av_decoded_frame->extended_data[0], byte_size);
-			buffer_fill = av_decoded_frame->nb_samples;
-			mix_rate = av_frame->sample_rate;
-
-			if (frame_pts < target_ts) {
-				int64_t samples_to_skip = target_ts - frame_pts;
-
-				if (samples_to_skip < buffer_fill) {
-					buffer_fill -= samples_to_skip;
-					std::memmove(buffer, buffer + samples_to_skip, buffer_fill * sizeof(sint16_stereo));
-					mixed = static_cast<int64_t>(p_position * mix_rate);
-				}
-			} else
-				mixed = av_rescale_q(frame_pts, audio_stream_ffmpeg->av_stream->time_base,
-									 AVRational{1, static_cast<int>(mix_rate)});
-		}
-
-		av_frame_unref(av_frame.get());
-		av_frame_unref(av_decoded_frame.get());
-	}
-
-	fill_buffer();
-	audio_stream_ffmpeg->mutex->unlock();
+	const AudioSampleS16Stereo* samples = reinterpret_cast<const AudioSampleS16Stereo*>(decode_buf.data());
+	size_t written = ring.write(samples, (size_t)converted);
+	if (written < (size_t)converted)
+		UtilityFunctions::printerr("GoZenAudioStream: audio ring overflow, dropped ",
+								   (int)((size_t)converted - written), " samples!");
+	return true;
 }
 
 int32_t AudioStreamFFmpegPlayback::_mix_resampled(AudioFrame* p_buffer, int32_t p_frames) {
-	if (!audio_stream_ffmpeg->loaded)
+	std::lock_guard<std::mutex> lock(decode_mutex);
+	if (!pipe.valid())
 		return 0;
+	if (stream->live_failed.load(std::memory_order_relaxed))
+		return 0; // latched dead: silence, no read (MediaPlayback reconnects off-thread)
 
-	while (buffer_fill < p_frames)
-		if (!fill_buffer())
+	arm_deadline(playback_interrupt, stream->network_timeout_us);
+
+	while (ring.count() < (size_t)p_frames)
+		if (!fill())
 			break;
 
-	if (p_frames <= buffer_fill) {
-		for (int i = 0; i < p_frames; ++i)
-			p_buffer[i] =
-				AudioFrame{static_cast<float>(buffer[i].l) / 32767.0f, static_cast<float>(buffer[i].r) / 32767.0f};
-		buffer_fill -= p_frames;
-		std::memmove(buffer, buffer + p_frames, buffer_fill * 4);
+	const size_t available = std::min((size_t)p_frames, ring.count());
+	if (available == 0)
+		return 0;
 
-		mixed += p_frames;
-		return p_frames;
-	}
+	if ((size_t)scratch.size() < available)
+		scratch.resize(available);
+	ring.read(scratch.data(), available);
 
-	// We still have some data to be sent over
-	else if (buffer_fill > 0) {
-		for (int i = 0; i < buffer_fill; ++i)
-			p_buffer[i] =
-				AudioFrame{static_cast<float>(buffer[i].l) / 32767.0f, static_cast<float>(buffer[i].r) / 32767.0f};
-		int32_t copied_frames = buffer_fill;
-		mixed += copied_frames;
-		buffer_fill = 0;
-		return copied_frames;
-	}
+	for (size_t i = 0; i < available; ++i)
+		p_buffer[i] = AudioFrame{(float)scratch[i].l / 32768.0f, (float)scratch[i].r / 32768.0f};
 
-	return 0;
+	mixed += (uint32_t)available;
+	return (int32_t)available;
 }
 
-bool AudioStreamFFmpegPlayback::fill_buffer() {
-	audio_stream_ffmpeg->mutex->lock();
-	if (audio_stream_ffmpeg->file_path == "") {
-		UtilityFunctions::printerr("Can't fill buffer, path is null!");
-		audio_stream_ffmpeg->mutex->unlock();
-		return false;
+void AudioStreamFFmpegPlayback::_start(double p_from_pos) {
+	{
+		std::lock_guard<std::mutex> lock(decode_mutex);
+		if (!ensure_open()) {
+			is_playing = false;
+			return;
+		}
 	}
+	is_playing = true;
+	mixed = 0;
+	_seek(p_from_pos);
+}
 
-	if (FFmpeg::get_frame(audio_stream_ffmpeg->av_format_ctx.get(), audio_stream_ffmpeg->av_codec_ctx.get(),
-						  audio_stream_ffmpeg->av_stream->index, av_frame.get(), av_packet.get())) {
-		UtilityFunctions::print("End of file");
-		audio_stream_ffmpeg->mutex->unlock();
-		return false;
+void AudioStreamFFmpegPlayback::_stop() {
+	is_playing = false;
+}
+
+void AudioStreamFFmpegPlayback::_seek(double p_position) {
+	std::lock_guard<std::mutex> lock(decode_mutex);
+	if (!pipe.valid())
+		return;
+
+	ring.clear();
+
+	int64_t target_ts = av_rescale_q((int64_t)(p_position * AV_TIME_BASE), AV_TIME_BASE_Q, pipe.stream->time_base);
+
+	avcodec_flush_buffers(pipe.codec_ctx.get());
+	if (int err = av_seek_frame(pipe.format_ctx.get(), pipe.stream->index, target_ts, AVSEEK_FLAG_BACKWARD)) {
+		FFmpeg::print_av_error("audio_decoder: Error while seeking", err);
+		return;
 	}
+	avcodec_flush_buffers(pipe.codec_ctx.get());
 
-	av_decoded_frame.get()->format = AV_SAMPLE_FMT_S16;
-	av_decoded_frame->ch_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
-	av_decoded_frame.get()->sample_rate = av_frame.get()->sample_rate;
-	av_decoded_frame.get()->nb_samples =
-		swr_get_out_samples(audio_stream_ffmpeg->swr_ctx.get(), av_frame.get()->nb_samples);
+	while (true) {
+		int r = FFmpeg::get_frame(pipe.format_ctx.get(), pipe.codec_ctx.get(), pipe.stream->index, av_frame.get(),
+								  av_packet.get());
+		if (r < 0) // EOF during seek
+			return;
 
-	if (auto resp = (av_frame_get_buffer(av_decoded_frame.get(), 0)) < 0) {
-		FFmpeg::print_av_error("Couldn't create new frame for swr!", resp);
+		int64_t frame_pts = av_frame->pts;
+		int64_t frame_dur = av_frame->nb_samples;
+		if (frame_pts + frame_dur < target_ts) {
+			av_frame_unref(av_frame.get());
+			continue; // entirely before the target
+		}
+
+		mixed = (uint32_t)(p_position * mix_rate);
+
+		int max_out = swr_get_out_samples(pipe.swr_ctx.get(), av_frame->nb_samples);
+		if (max_out > 0) {
+			if ((int)scratch.size() < max_out)
+				scratch.resize(max_out);
+			uint8_t* out_ptr = (uint8_t*)scratch.data();
+			int converted = swr_convert(pipe.swr_ctx.get(), &out_ptr, max_out,
+										(const uint8_t**)av_frame->extended_data, av_frame->nb_samples);
+			if (converted > 0) {
+				size_t skip = 0;
+				if (frame_pts < target_ts) {
+					int64_t to_skip = target_ts - frame_pts;
+					skip = (to_skip < converted) ? (size_t)to_skip : (size_t)converted;
+				}
+				ring.write(scratch.data() + skip, (size_t)converted - skip);
+			}
+		}
 		av_frame_unref(av_frame.get());
-		av_frame_unref(av_decoded_frame.get());
-		audio_stream_ffmpeg->mutex->unlock();
-		return false;
+		break;
 	}
-
-	if (auto resp = swr_config_frame(audio_stream_ffmpeg->swr_ctx.get(), av_decoded_frame.get(), av_frame.get()) < 0) {
-		FFmpeg::print_av_error("Couldn't config the audio frame!", resp);
-		av_frame_unref(av_frame.get());
-		av_frame_unref(av_decoded_frame.get());
-		audio_stream_ffmpeg->mutex->unlock();
-		return false;
-	}
-
-	if (auto resp = swr_convert_frame(audio_stream_ffmpeg->swr_ctx.get(), av_decoded_frame.get(), av_frame.get()) < 0) {
-		FFmpeg::print_av_error("Couldn't convert the audio frame!", resp);
-		av_frame_unref(av_frame.get());
-		av_frame_unref(av_decoded_frame.get());
-		audio_stream_ffmpeg->mutex->unlock();
-		return false;
-	}
-
-	int new_samples = av_decoded_frame.get()->nb_samples;
-	size_t byte_size = new_samples * audio_stream_ffmpeg->bytes_per_sample;
-	byte_size *= 2;
-
-	// Check if there is enough space in the buffer
-	if (buffer_fill + new_samples > buffer_len) {
-		audio_stream_ffmpeg->_log_err("Buffer overflow prevented in fill_buffer!");
-		av_frame_unref(av_frame.get());
-		av_frame_unref(av_decoded_frame.get());
-		audio_stream_ffmpeg->mutex->unlock();
-		return false;
-	}
-
-	std::memcpy(buffer + buffer_fill, av_decoded_frame.get()->extended_data[0], byte_size);
-
-	buffer_fill += av_decoded_frame.get()->nb_samples;
-	mix_rate = av_frame.get()->sample_rate;
-	av_frame_unref(av_frame.get());
-	av_frame_unref(av_decoded_frame.get());
-
-	audio_stream_ffmpeg->mutex->unlock();
-	return true;
 }
 
 void AudioStreamFFmpeg::_bind_methods() {
 	// Methods
 	ClassDB::bind_method(D_METHOD("open", "path", "stream_index"), &AudioStreamFFmpeg::open, DEFVAL(-1));
 	ClassDB::bind_method(D_METHOD("close"), &AudioStreamFFmpeg::close);
+	ClassDB::bind_method(D_METHOD("cancel"), &AudioStreamFFmpeg::cancel);
 
 	// Getters
 	ClassDB::bind_method(D_METHOD("is_open"), &AudioStreamFFmpeg::is_open);
-	ClassDB::bind_method(D_METHOD("get_use_icy"), &AudioStreamFFmpeg::get_use_icy);
+	ClassDB::bind_method(D_METHOD("is_stream_healthy"), &AudioStreamFFmpeg::is_stream_healthy);
+	ClassDB::bind_method(D_METHOD("get_sample_rate"), &AudioStreamFFmpeg::get_sample_rate);
+	ClassDB::bind_method(D_METHOD("is_stereo"), &AudioStreamFFmpeg::is_stereo);
 	ClassDB::bind_method(D_METHOD("get_headers"), &AudioStreamFFmpeg::get_headers);
-	ClassDB::bind_method(D_METHOD("get_icy_headers"), &AudioStreamFFmpeg::get_icy_headers);
-	ClassDB::bind_method(D_METHOD("get_stream_title"), &AudioStreamFFmpeg::get_stream_title);
-	ClassDB::bind_method(D_METHOD("get_tags"), &AudioStreamFFmpeg::get_tags);
+	ClassDB::bind_method(D_METHOD("get_network_timeout"), &AudioStreamFFmpeg::get_network_timeout);
 
 	// Setters
-	ClassDB::bind_method(D_METHOD("set_use_icy", "value"), &AudioStreamFFmpeg::set_use_icy);
-	ClassDB::bind_method(D_METHOD("set_headers", "headers_str"), &AudioStreamFFmpeg::set_headers);
+	ClassDB::bind_method(D_METHOD("set_headers", "headers"), &AudioStreamFFmpeg::set_headers);
+	ClassDB::bind_method(D_METHOD("set_network_timeout", "seconds"), &AudioStreamFFmpeg::set_network_timeout);
 
-	// Propeties
-	ClassDB::add_property(get_class_static(), PropertyInfo(Variant::BOOL, "use_icy"), "set_use_icy", "get_use_icy");
+	// Properties
 	ClassDB::add_property(get_class_static(), PropertyInfo(Variant::STRING, "headers"), "set_headers", "get_headers");
 }

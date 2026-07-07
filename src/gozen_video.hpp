@@ -5,15 +5,10 @@
 
 #include <cmath>
 #include <cstdint>
-#include <godot_cpp/classes/audio_stream_wav.hpp>
-#include <godot_cpp/classes/control.hpp>
+#include <cstdlib>
+#include <cstring>
 #include <godot_cpp/classes/file_access.hpp>
-#include <godot_cpp/classes/gd_extension_manager.hpp>
-#include <godot_cpp/classes/image_texture.hpp>
-#include <godot_cpp/classes/os.hpp>
-#include <godot_cpp/classes/rendering_server.hpp>
-#include <godot_cpp/classes/time.hpp>
-#include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/classes/image.hpp>
 #include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
@@ -27,25 +22,23 @@ class GoZenVideo : public Resource {
 	GoZenVideo() {}
 	~GoZenVideo() { close(); }
 
-	enum StreamType { VIDEO = 0, AUDIO = 1, SUBTITLE = 2 };
-
-	int open(const String& video_path);
+	Error open(const String& video_path);
 	void close();
 
 	inline bool is_open() const { return loaded; }
 
-	int seek_frame(int frame_nr);
+	Error seek_frame(int frame_nr);
 	bool next_frame(bool skip = false);
 
-	PackedInt32Array get_streams(int stream_type);
-	Dictionary get_stream_metadata(int stream_index);
-
-	int get_chapter_count();
-	float get_chapter_start(int chapter_index);
-	float get_chapter_end(int chapter_index);
-	Dictionary get_chapter_metadata(int chapter_index);
 	inline void set_headers(const String& headers_str) { headers = headers_str; }
 	inline String get_headers() const { return headers; }
+
+	inline void cancel() { interrupt.aborted.store(true, std::memory_order_relaxed); }
+
+	inline void set_network_timeout(double seconds) {
+		network_timeout_us = seconds > 0.0 ? (int64_t)(seconds * 1'000'000.0) : 0;
+	}
+	inline double get_network_timeout() const { return (double)network_timeout_us / 1'000'000.0; }
 
 	inline void set_sws_flag_bilinear() { sws_flag = SWS_BILINEAR; }
 	inline void set_sws_flag_bicubic() { sws_flag = SWS_BICUBIC; }
@@ -59,27 +52,27 @@ class GoZenVideo : public Resource {
 	inline String get_path() const { return path; }
 
 	inline Vector2i get_resolution() const { return resolution; }
-	inline Vector2i get_actual_resolution() const { return actual_resolution; }
 
 	inline int get_width() const { return resolution.x; }
 	inline int get_height() const { return resolution.y; }
-	inline int get_actual_width() const { return actual_resolution.x; }
-	inline int get_actual_height() const { return actual_resolution.y; }
 	inline int get_padding() const { return padding; }
 	inline int get_rotation() const { return rotation; }
 	inline int get_interlaced() const { return interlaced; }
 
-	inline int get_duration_us() const { return duration; }
-	inline int get_frame_count() const { return frame_count; };
-	inline int get_current_frame() const { return current_frame; }
+	inline int64_t get_duration_us() const { return duration; }
+	inline int64_t get_frame_count() const { return frame_count; };
+	inline int64_t get_current_frame() const { return current_frame; }
 
 	inline float get_aspect_ratio() const { return sar; }
 	inline float get_framerate() const { return framerate; }
 
 	inline String get_pixel_format() const { return pixel_format; }
-	inline String get_color_profile() const { return av_color_primaries_name(color_profile); }
+	inline String get_color_profile() const {
+		const char* name = av_color_primaries_name(color_profile);
+		return name ? String(name) : String("");
+	}
 
-	inline bool get_has_alpha() const { return has_alpha; }
+	inline bool has_alpha() const { return alpha_layer; }
 
 	inline bool is_full_color_range() const { return full_color_range; }
 	inline bool is_using_sws() const { return using_sws; }
@@ -106,12 +99,15 @@ class GoZenVideo : public Resource {
 	UniqueAVFrame av_sws_frame;
 	UniqueSwsCtx sws_ctx;
 
-	enum AVColorPrimaries color_profile;
+	enum AVColorPrimaries color_profile = AVCOL_PRI_UNSPECIFIED;
 
-	BufferData buffer_data;
+	std::unique_ptr<BufferData> buffer_data;
+
+	InterruptState interrupt;                 // abort/timeout signal for open()/next_frame()/seek_frame()
+	int64_t network_timeout_us = 5'000'000;   // 5 s default; 0 = infinite
 
 	// Default variable types.
-	int current_frame = 0;
+	int64_t current_frame = 0;
 	int padding = 0;
 
 	int8_t rotation = 0;
@@ -142,39 +138,32 @@ class GoZenVideo : public Resource {
 	String pixel_format = "";
 	String headers = "";
 
-	Vector2i resolution = Vector2i(0, 0);
-	Vector2i actual_resolution = Vector2i(0, 0);
+	Vector2i resolution = Vector2i(0, 0);     // decoded/render size — exposed via get_resolution/width/height
+	Vector2i src_resolution = Vector2i(0, 0); // SAR-adjusted display size (source property; not exposed)
 
 	Ref<Image> y_data;
 	Ref<Image> u_data;
 	Ref<Image> v_data;
 	Ref<Image> a_data;
 
-	bool has_alpha = false;
+	bool alpha_layer = false;
 
 	PackedByteArray file_buffer; // For `res://` videos.
 
-	PackedInt32Array video_streams;
-	PackedInt32Array audio_streams;
-	PackedInt32Array subtitle_streams;
-
 	// Private functions.
 	void _copy_frame_data();
-	void _clean_frame_data();
 
 	int _seek_frame(int frame_nr);
 
-	inline void _log(String message) {
+	inline void _log(const String& message) {
 		if (debug)
 			UtilityFunctions::print("GoZenVideo: ", message, ".");
 	}
-	inline bool _log_err(String message) {
+	inline Error _log_err(const String& message) {
 		UtilityFunctions::printerr("GoZenVideo: ", message, "!");
-		return true;
+		return FAILED;
 	}
 
   protected:
 	static void _bind_methods();
 };
-
-VARIANT_ENUM_CAST(GoZenVideo::StreamType);

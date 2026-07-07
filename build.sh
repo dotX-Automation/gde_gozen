@@ -6,12 +6,12 @@
 # sudo dpkg --add-architecture arm64
 # sudo apt install scons cmake make aom-tools libaom-dev libvpx-dev yasm nasm mingw-w64 gcc-14-aarch64-linux-gnu g++-14-aarch64-linux-gnu crossbuild-essential-arm64 zlib1g-dev zlib1g-dev:arm64 libz-mingw-w64-dev
 #
-# packeges to install for the android-sdk
-# cmdline-tools
-# platform-tools
+# packeges to install for the android-sdk using sdkmanager in cmdline-tools
 # built-tools;35.0.1
-# ndk;23.2.8568313
-# ndk;28.2.13676358
+# cmake;3.10.2.4988404
+# ndk;28.1.13356709
+# platform-tools
+# platforms;android-35
 
 # ==== SETUP ====
 
@@ -41,7 +41,7 @@ ln -sf $(which aarch64-linux-gnu-g++-14) "$TOOLS_DIR/aarch64-linux-gnu-g++"
 
 # Android
 export ANDROID_HOME="$HOME/.android-sdk"
-export ANDROID_NDK_ROOT="$HOME/.android-sdk/ndk/28.2.13676358"
+export ANDROID_NDK_ROOT="$HOME/.android-sdk/ndk/28.1.13356709"
 
 # ==== BUILD ====
 

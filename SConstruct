@@ -4,7 +4,7 @@ import platform as os_platform
 
 
 LIBS_COMMON = ["avformat", "avcodec", "swscale", "swresample", "avutil"]
-LOCATION = "test_room/addons/gde_gozen/bin"
+BIN_DIR = "bin"
 
 march_flags = {"x86_64": "x86-64", "arm64": "armv8-a"}
 
@@ -17,7 +17,7 @@ jobs = ARGUMENTS.get("jobs", 4)
 platform = ARGUMENTS.get("platform", "linux")
 arch = ARGUMENTS.get("arch", "x86_64")
 target = ARGUMENTS.get("target", "template_debug").split("_")[-1]
-libpath = f"{LOCATION}/libgozen{env_suffix}{env_shlibsuffix}"
+libpath = f"{BIN_DIR}/{platform}/libgozen{env_suffix}{env_shlibsuffix}"
 
 
 if "linux" in platform:

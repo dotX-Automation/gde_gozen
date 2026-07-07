@@ -827,15 +827,17 @@ def compile_ffmpeg_web(arch: str) -> None:
     print("Compiling FFmpeg for Web finished!")
 
 
-def update_csharp_bins():
-    for root, _, files in os.walk("test_room"):
-        for file in files:
-            if file.startswith("libgozen"):
-                rel_path = os.path.relpath(root, "test_room")
-                dst_dir = os.path.join("test_room_csharp", rel_path)
+def update_test_room_bin(platform: str) -> None:
+    # Copy the freshly built GDExtension library from the repo-root build
+    # output (bin/<platform>/) into the test_room reference project so it can
+    # load the extension through its res:// .gdextension library paths.
+    src_dir = os.path.join("bin", platform)
+    dst_dir = os.path.join("test_room", "addons", "gde_gozen", "bin", platform)
+    os.makedirs(dst_dir, exist_ok=True)
 
-                os.makedirs(dst_dir, exist_ok=True)
-                shutil.copy2(os.path.join(root, file), os.path.join(dst_dir, file))
+    for file in glob.glob(os.path.join(src_dir, "libgozen*")):
+        shutil.copy2(file, dst_dir)
+        print(f"Copied {file} to {dst_dir}")
 
 
 def main():
@@ -929,7 +931,7 @@ def main():
         subprocess.run(clean_cmd, cwd="./", env=env)
 
     subprocess.run(cmd, cwd="./", env=env)
-    update_csharp_bins()
+    update_test_room_bin(platform)
 
     print("")
     print("v=========================v")

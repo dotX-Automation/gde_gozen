@@ -53,12 +53,14 @@ test_exports/
 *.zip
 ffmpeg_examples
 
-test_room/addons/gde_gozen/bin/web
-test_room/addons/gde_gozen/bin/linux*
-test_room/addons/gde_gozen/bin/windows*
-test_room/addons/gde_gozen/bin/macos*
+# Build output (repo-root, per-platform subfolders)
+/bin/
 
-# C# Stuff
+# GDExtension libraries copied into the test_room reference project
+# (keep only the .gdignore so Godot skips importing the folder)
+test_room/addons/gde_gozen/bin/*
+!test_room/addons/gde_gozen/bin/.gdignore
+
 .idea/
 .qodo/
 /libressl-3.9.2

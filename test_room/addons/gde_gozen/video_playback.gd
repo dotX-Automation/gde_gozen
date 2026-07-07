@@ -41,6 +41,7 @@ var playback_speed: float = 1.0: set = set_playback_speed ## Adjust the video pl
 @export var debug: bool = false ## Enable/disable the printing of debug info.
 
 var video: GoZenVideo = null ## Video class object of GDE GoZen which interacts with video files through FFmpeg.
+var _metadata: GoZenMetadata = null ## Catalog probe (streams/chapters/stream metadata).
 
 var video_texture: TextureRect = TextureRect.new() ## The texture rect is the view of the video, you can adjust the scaling options as you like, it is set to always center and scale the image to fit within the main VideoPlayback node size.
 var audio_player: AudioStreamPlayer = AudioStreamPlayer.new() ## Audio player is the AudioStreamPlayer which handles the audio playback for the video, only mess with the settings if you know what you are doing and know what you'd like to achieve.
@@ -191,19 +192,22 @@ func _update_video(new_video: GoZenVideo) -> void:
 	_frame_rate = video.get_framerate()
 	_resolution = video.get_resolution()
 	_frame_count = video.get_frame_count()
-	_has_alpha = video.get_has_alpha()
+	_has_alpha = video.has_alpha()
 
-	video_streams = video.get_streams(STREAM_TYPE.VIDEO)
-	audio_streams = video.get_streams(STREAM_TYPE.AUDIO)
-	subtitle_streams = video.get_streams(STREAM_TYPE.SUBTITLE)
+	_metadata = GoZenMetadata.new()
+	if _metadata.open(path) != OK:
+		printerr("Couldn't probe media metadata!")
+
+	video_streams = _metadata.get_video_streams()
+	audio_streams = _metadata.get_audio_streams()
+	subtitle_streams = _metadata.get_subtitle_streams()
 
 	chapters.clear()
-	for i: int in range(video.get_chapter_count()):
-		@warning_ignore("UNSAFE_CALL_ARGUMENT")
+	for i: int in range(_metadata.get_chapter_count()):
 		var chapter: Chapter = Chapter.new(
-			video.get_chapter_start(i),
-			video.get_chapter_end(i),
-			video.get_chapter_metadata(i).get("title", "")
+			_metadata.get_chapter_start_us(i) / 1_000_000.0,
+			_metadata.get_chapter_end_us(i) / 1_000_000.0,
+			str(_metadata.get_chapter_metadata(i).get("title", ""))
 		)
 		chapters.append(chapter)
 
@@ -220,7 +224,7 @@ func _update_video(new_video: GoZenVideo) -> void:
 	video_texture.texture.set_image(image)
 
 	# Applying shader params.
-	_shader_material.set_shader_parameter("resolution", video.get_actual_resolution())
+	_shader_material.set_shader_parameter("resolution", video.get_resolution())
 	_shader_material.set_shader_parameter("full_color", video.is_full_color_range())
 	_shader_material.set_shader_parameter("interlaced", video.get_interlaced())
 	_shader_material.set_shader_parameter("rotation", rotation_radians)
@@ -447,7 +451,7 @@ func get_stream_title(stream: int) -> String:
 		printerr("Video is not open!")
 		return ""
 
-	return video.get_stream_metadata(stream).get("title")
+	return _metadata.get_stream_metadata(stream).get("title", "") if _metadata != null else ""
 
 
 ## Getting the language of a stream.
@@ -456,7 +460,7 @@ func get_stream_language(stream: int) -> String:
 		printerr("Video is not open!")
 		return ""
 
-	return video.get_stream_metadata(stream).get("language")
+	return _metadata.get_stream_metadata(stream).get("language", "") if _metadata != null else ""
 
 
 ## Checking to see if the video is open or not, trying to run functions without checking if open can crash your project.
@@ -557,7 +561,7 @@ func _open_audio(stream_id: int = -1) -> void:
 
 func _print_stream_info(streams: PackedInt32Array) -> void:
 	for i: int in range(len(streams)):
-		var metadata: Dictionary = video.get_stream_metadata(streams[i])
+		var metadata: Dictionary = _metadata.get_stream_metadata(streams[i]) if _metadata != null else {}
 		var title: String = metadata.get("title")
 		var language: String = metadata.get("language")
 
@@ -583,7 +587,7 @@ func _print_video_debug() -> void:
 	print_rich("[b]Video debug info")
 	print("Extension: ", path.get_extension())
 	print("Resolution: ", _resolution)
-	print("Actual resolution: ", video.get_actual_resolution())
+	print("Actual resolution: ", video.get_resolution())
 	print("Pixel format: ", video.get_pixel_format())
 	print("Color profile: ", video.get_color_profile())
 	print("Framerate: ", _frame_rate)
@@ -594,7 +598,7 @@ func _print_video_debug() -> void:
 	print("Full color range: ", video.is_full_color_range())
 	print("Interlaced flag: ", video.get_interlaced())
 	print("Using sws: ", video.is_using_sws())
-	print("Sar: ", video.get_sar())
+	print("Sar: ", video.get_aspect_ratio())
 
 	print_rich("Video streams: [i](%s)" % video_streams.size())
 	_print_stream_info(video_streams)
