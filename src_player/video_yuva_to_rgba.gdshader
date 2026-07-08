@@ -10,6 +10,11 @@ uniform vec4 color_profile;
 uniform bool full_color;
 uniform int interlaced; // 0 = no, 1 = top first, 2 = bottom first.
 uniform float rotation;
+// Set by MediaPlayback: true only under the Forward+ renderer with HDR 2D, where
+// the 2D canvas is composited in linear space. Every other configuration treats
+// canvas colors as sRGB, matching this shader's YUV->RGB output; in the HDR 2D
+// case that output must be decoded to linear to look the same.
+uniform bool output_linear = false;
 
 varying vec2 tex_uv;
 varying vec4 modulate;
@@ -46,11 +51,17 @@ void fragment() {
 			yuv = (yuv - LIMITED_Y_OFFSET) * LIMITED_SCALE;
 		}
 
-		COLOR = vec4(
+		vec3 rgb = vec3(
 			yuv.x + (yuv.z * color_profile.x),
 			yuv.x - dot(yuv.yz, color_profile.yz),
-			yuv.x + (yuv.y * color_profile.w),
-			texture(a_data, tex_uv).r
-		) * modulate;
+			yuv.x + (yuv.y * color_profile.w)
+		);
+
+		if (output_linear) { // sRGB -> linear (IEC 61966-2-1), color channels only.
+			rgb = clamp(rgb, 0.0, 1.0);
+			rgb = mix(rgb / 12.92, pow((rgb + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), rgb));
+		}
+
+		COLOR = vec4(rgb, texture(a_data, tex_uv).r) * modulate;
 	}
 }

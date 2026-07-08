@@ -13,6 +13,11 @@ is the YUVA→RGBA canvas shader it drives.
    you placed the shader.
 3. Add a `MediaPlayback` node and call `open("rtsp://…")` or `open("res://clip.mp4")`.
 
+Colour is handled for every renderer automatically: the shader's `output_linear`
+uniform is set at setup, decoding the video to linear only under the **Forward+**
+renderer with **HDR 2D** enabled (where the canvas is composited in linear space)
+and leaving it untouched everywhere else. No per-project shader swap is needed.
+
 ## Usage
 
 ```gdscript

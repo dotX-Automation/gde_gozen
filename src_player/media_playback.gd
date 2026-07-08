@@ -166,6 +166,7 @@ var _duration_us: int = 0
 func _enter_tree() -> void:
 	_shader_material = ShaderMaterial.new()
 	_shader_material.shader = load(SHADER_PATH)
+	_shader_material.set_shader_parameter("output_linear", _needs_linear_output())
 
 	video_texture = TextureRect.new()
 	video_texture.material = _shader_material
@@ -803,6 +804,15 @@ func _resolve_color_profile(profile_str: String) -> Vector4:
 			return Vector4(1.402, 0.344136, 0.714136, 1.772)
 		_:
 			return Vector4(1.5748, 0.1873, 0.4681, 1.8556) # bt709 and unknown
+
+
+func _needs_linear_output() -> bool:
+	# The Forward+ renderer with "rendering/viewport/hdr_2d" enabled composites the
+	# 2D canvas in linear space; every other renderer (and Forward+ without HDR 2D)
+	# treats canvas colors as sRGB. The shader's YUV->RGB output is sRGB-encoded, so
+	# it must be decoded to linear only in that one case (see "output_linear").
+	return RenderingServer.get_current_rendering_method() == "forward_plus" \
+			and bool(ProjectSettings.get_setting("rendering/viewport/hdr_2d", false))
 
 
 func _apply_pitch_adjust() -> void:
