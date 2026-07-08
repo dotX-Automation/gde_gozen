@@ -29,23 +29,14 @@ extern "C" {
 
 #include "ffmpeg_helpers.hpp"
 
-// Arm (or clear) an InterruptState's deadline: now + timeout, or 0 when timeout <= 0 (infinite).
-inline void arm_deadline(InterruptState& s, int64_t timeout_us) {
-	s.deadline_us.store(timeout_us > 0 ? av_gettime_relative() + timeout_us : 0, std::memory_order_relaxed);
-}
-
-// Installs the shared interrupt callback on `ctx` (polled by libavformat during blocking I/O).
-// `state` must outlive `ctx`. Defined in ffmpeg.cpp (ffmpeg_interrupt_cb is file-local there).
-void install_interrupt_callback(AVFormatContext* ctx, InterruptState* state);
-
 #include <godot_cpp/classes/audio_stream_wav.hpp>
 #include <godot_cpp/classes/os.hpp>
-#include <godot_cpp/variant/utility_functions.hpp>
-#include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/packed_int32_array.hpp>
 #include <godot_cpp/variant/string.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/vector2i.hpp>
 
 #include <vector>
@@ -53,20 +44,7 @@ void install_interrupt_callback(AVFormatContext* ctx, InterruptState* state);
 using namespace godot;
 
 
-class FFmpeg {
-  public:
-	const static int AVIO_CTX_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
-
-	static void print_av_error(const char* message, int error);
-
-	static void enable_multithreading(AVCodecContext* codec_ctx, const AVCodec* codec);
-	static int get_frame(AVFormatContext* format_ctx, AVCodecContext* codec_ctx, int stream_id, AVFrame* frame,
-						 AVPacket* packet);
-	static enum AVPixelFormat get_hw_format(const enum AVPixelFormat* pix_fmt, enum AVPixelFormat* hw_pix_fmt);
-
-	static int read_buffer_packet(void* opaque, uint8_t* buffer, int buffer_size);	// For `res://` videos.
-	static int64_t seek_buffer(void* opaque, int64_t offset, int where);			// For `res://` videos.
-};
+// --- Media-catalog data types ---
 
 // Restricts which media streams a container open will set up. For RTSP this maps to FFmpeg's
 // `allowed_media_types` option, so the server only transmits the requested type (bandwidth saving).
@@ -106,12 +84,38 @@ struct MediaMetadata {
 	std::vector<ChapterInfo> chapters;
 };
 
-// Walks `format_ctx` once and fills `out` (reset first). Sets out.valid on success. format-level facts,
-// per-stream typed facts + raw tags, and chapters (µs). Reads only already-parsed container structures
-// (call after avformat_find_stream_info).
-void populate_media_metadata(AVFormatContext* format_ctx, MediaMetadata& out);
 
-// --- Shared audio pipeline helpers (used by AudioStreamFFmpeg and GoZenAudio) ---
+// --- FFmpeg utility class ---
+
+class FFmpeg {
+  public:
+	const static int AVIO_CTX_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
+
+	static void print_av_error(const char* message, int error);
+
+	static void enable_multithreading(AVCodecContext* codec_ctx, const AVCodec* codec);
+	static int get_frame(AVFormatContext* format_ctx, AVCodecContext* codec_ctx, int stream_id, AVFrame* frame,
+						 AVPacket* packet);
+	static enum AVPixelFormat get_hw_format(const enum AVPixelFormat* pix_fmt, enum AVPixelFormat* hw_pix_fmt);
+
+	static int read_buffer_packet(void* opaque, uint8_t* buffer, int buffer_size);	// For `res://` videos.
+	static int64_t seek_buffer(void* opaque, int64_t offset, int where);			// For `res://` videos.
+};
+
+
+// --- Interrupt / timeout helpers ---
+
+// Arm (or clear) an InterruptState's deadline: now + timeout, or 0 when timeout <= 0 (infinite).
+inline void arm_deadline(InterruptState& s, int64_t timeout_us) {
+	s.deadline_us.store(timeout_us > 0 ? av_gettime_relative() + timeout_us : 0, std::memory_order_relaxed);
+}
+
+// Installs the shared interrupt callback on `ctx` (polled by libavformat during blocking I/O).
+// `state` must outlive `ctx`. Defined in ffmpeg.cpp (ffmpeg_interrupt_cb is file-local there).
+void install_interrupt_callback(AVFormatContext* ctx, InterruptState* state);
+
+
+// --- Container open + metadata ---
 
 // Opens an AVFormatContext from either a real path or an in-memory byte buffer (res:// / user://).
 // Builds demux options from headers / rtsp_transport and runs avformat_find_stream_info.
@@ -122,6 +126,14 @@ bool open_format_context(const String& path, const PackedByteArray& bytes, const
 						 StreamMediaType restrict_to, UniqueAVFormatCtxInput& out_format_ctx,
 						 UniqueAVIOContext& out_avio, std::unique_ptr<BufferData>& out_buffer_data,
 						 InterruptState* interrupt = nullptr);
+
+// Walks `format_ctx` once and fills `out` (reset first). Sets out.valid on success. format-level facts,
+// per-stream typed facts + raw tags, and chapters (µs). Reads only already-parsed container structures
+// (call after avformat_find_stream_info).
+void populate_media_metadata(AVFormatContext* format_ctx, MediaMetadata& out);
+
+
+// --- Shared audio pipeline helpers (used by AudioStreamFFmpeg and GoZenAudio) ---
 
 // Opens a full decode pipeline and configures SWR to output `out_layout`/`out_fmt` at
 // `out_sample_rate` (0 = match the source rate). When `use_multithreading` is true, the
