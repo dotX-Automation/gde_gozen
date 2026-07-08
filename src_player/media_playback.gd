@@ -8,7 +8,6 @@ extends Control
 ## (RTSP) are latency-first (latest-wins, no active A/V resync); finite files add
 ## framerate pacing, seek, loop and audio-follow sync. The media catalog is a
 ## proxy over a one-shot GoZenMetadata probe.
-## See docs/superpowers/specs/2026-07-02-threaded-media-playback-design.md
 
 #region Signals
 signal media_opened
