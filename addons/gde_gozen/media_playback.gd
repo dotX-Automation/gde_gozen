@@ -267,15 +267,7 @@ func play() -> void:
 	_paused = false
 	_mutex.unlock()
 
-	if audio_enable and audio_player.stream != null:
-		audio_player.pitch_scale = speed
-		_apply_pitch_adjust()
-		audio_player.set_stream_paused(false)
-		if _is_live:
-			if not audio_player.playing:
-				audio_player.play()
-		else:
-			audio_player.play((_current_frame / _frame_rate) if _frame_rate > 0.0 else 0.0)
+	_start_audio_playback()
 
 	playback_started.emit()
 
@@ -647,6 +639,8 @@ func _on_opened(facts: Dictionary) -> void:
 
 	if _audio != null:
 		audio_player.stream = _audio
+		if _is_playing:                 # play() ran before the stream was ready — start audio now
+			_start_audio_playback()
 
 	_is_ready = true
 	media_opened.emit()
@@ -828,6 +822,23 @@ func _needs_linear_output() -> bool:
 	# it must be decoded to linear only in that one case (see "output_linear").
 	return RenderingServer.get_current_rendering_method() == "forward_plus" \
 			and bool(ProjectSettings.get_setting("rendering/viewport/hdr_2d", false))
+
+
+func _start_audio_playback() -> void:
+	# Audio-start branch shared by play() and _on_opened(). _on_opened() calls it when a play()
+	# arrived before the worker thread had attached the stream, so audio isn't left silent for
+	# the session (mirrors video, which self-corrects each _process tick). Guards keep the
+	# open()->play()->pause()-before-ready case correctly silent (pause() clears _is_playing).
+	if not audio_enable or audio_player.stream == null:
+		return
+	audio_player.pitch_scale = speed
+	_apply_pitch_adjust()
+	audio_player.set_stream_paused(false)
+	if _is_live:
+		if not audio_player.playing:
+			audio_player.play()
+	else:
+		audio_player.play((_current_frame / _frame_rate) if _frame_rate > 0.0 else 0.0)
 
 
 func _apply_pitch_adjust() -> void:
