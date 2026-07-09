@@ -1,242 +1,123 @@
 #include "gozen_audio.hpp"
 
 
-PackedByteArray GoZenAudio::_get_audio(AVFormatContext*& format_ctx, AVStream*& stream, bool stereo) {
-	const int TARGET_SAMPLE_RATE = 44100;
-	const AVSampleFormat TARGET_FORMAT = AV_SAMPLE_FMT_S16;
-	const AVChannelLayout TARGET_LAYOUT =
+PackedByteArray GoZenAudio::get_audio_data(const String& file_path, int stream_index, bool stereo, int sample_rate) {
+	if (sample_rate <= 0)
+		sample_rate = 44100;
+
+	PackedByteArray data;
+
+	PackedByteArray file_buffer; // res:// / user:// bytes; MUST outlive the pipeline below
+	if (file_path.begins_with("res://") || file_path.begins_with("user://")) {
+		file_buffer = FileAccess::get_file_as_bytes(file_path);
+		if (file_buffer.is_empty()) {
+			_log_err("Couldn't load file from path '" + file_path + "'");
+			return data;
+		}
+	}
+
+	AVChannelLayout out_layout =
 		stereo ? (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO : (AVChannelLayout)AV_CHANNEL_LAYOUT_MONO;
 
-	UniqueAVCodecCtx codec_ctx;
-	UniqueSwrCtx swr_ctx;
-	UniqueAVPacket av_packet;
-	UniqueAVFrame av_frame;
-	UniqueAVFrame av_decoded_frame;
+	AudioDecodePipeline pipe;
+	if (!open_audio_pipeline(file_path, file_buffer, "", stream_index, out_layout, AV_SAMPLE_FMT_S16,
+							 sample_rate, true, pipe))
+		return data; // open_audio_pipeline already logged
 
-	PackedByteArray audio_data = PackedByteArray();
-
-	const AVCodec* codec = avcodec_find_decoder(stream->codecpar->codec_id);
-	if (!codec) {
-		UtilityFunctions::printerr("Couldn't find any decoder for audio!");
-		return audio_data;
+	// GoZenAudio decodes the whole track to memory, so it requires a finite source.
+	if (pipe.stream->duration == AV_NOPTS_VALUE && pipe.format_ctx->duration == AV_NOPTS_VALUE) {
+		_log_err("Source has no finite duration (live stream?); use AudioStreamFFmpeg for streaming playback");
+		return data;
 	}
 
-	codec_ctx = make_unique_ffmpeg<AVCodecContext, AVCodecCtxDeleter>(avcodec_alloc_context3(codec));
-	if (codec_ctx == NULL) {
-		UtilityFunctions::printerr("Couldn't allocate context for audio!");
+	return _decode_to_pba(pipe);
+}
+
+
+Ref<AudioStreamWAV> GoZenAudio::get_audio_stream_wav(const String& file_path, int stream_index, bool stereo,
+													int sample_rate) {
+	if (sample_rate <= 0)
+		sample_rate = 44100;
+
+	PackedByteArray pcm = get_audio_data(file_path, stream_index, stereo, sample_rate);
+	if (pcm.is_empty())
+		return Ref<AudioStreamWAV>(); // null: decode failed / source refused (already logged)
+
+	Ref<AudioStreamWAV> wav;
+	wav.instantiate();
+	wav->set_data(pcm);
+	wav->set_format(AudioStreamWAV::FORMAT_16_BITS);
+	wav->set_mix_rate(sample_rate);
+	wav->set_stereo(stereo);
+	return wav;
+}
+
+
+PackedByteArray GoZenAudio::_decode_to_pba(AudioDecodePipeline& pipe) {
+	PackedByteArray audio_data;
+
+	const int frame_bytes = pipe.out_channels * pipe.bytes_per_sample; // bytes per output sample (all channels)
+	const int64_t MAX_SIZE = 2147483600;                               // ~2 GB ceiling (Godot PackedByteArray)
+
+	double duration_sec = (pipe.stream->duration != AV_NOPTS_VALUE)
+							  ? pipe.stream->duration * av_q2d(pipe.stream->time_base)
+							  : (double)pipe.format_ctx->duration / AV_TIME_BASE;
+
+	int64_t estimated = (int64_t)(duration_sec * pipe.sample_rate) * frame_bytes;
+	if (estimated < 4096)
+		estimated = 4096; // unknown/short: start small, grow geometrically
+	if (estimated >= MAX_SIZE) {
+		_log_err("Audio is too big, cut the source into smaller parts in order to use");
 		return audio_data;
 	}
-	if (avcodec_parameters_to_context(codec_ctx.get(), stream->codecpar)) {
-		UtilityFunctions::printerr("Couldn't initialize audio codec context!");
-		return audio_data;
-	}
+	audio_data.resize(estimated);
 
-	FFmpeg::enable_multithreading(codec_ctx.get(), codec);
-	codec_ctx->request_sample_fmt = TARGET_FORMAT;
+	UniqueAVFrame frame = make_unique_avframe();
+	UniqueAVPacket packet = make_unique_avpacket();
+	std::vector<uint8_t> scratch;
 
-	if (avcodec_open2(codec_ctx.get(), codec, NULL)) {
-		UtilityFunctions::printerr("Couldn't open audio codec!");
-		return audio_data;
-	}
+	int64_t audio_size = 0;
+	uint8_t* dst = audio_data.ptrw();
+	bool overflow = false;
 
-	SwrContext* temp_swr_ctx = nullptr;
-	int response = swr_alloc_set_opts2(&temp_swr_ctx,
-									   &TARGET_LAYOUT,		   // Out channel layout: Stereo.
-									   TARGET_FORMAT,		   // We need 16 bits.
-									   TARGET_SAMPLE_RATE,	   // Sample rate should be the Godot default.
-									   &codec_ctx->ch_layout,  // In channel layout.
-									   codec_ctx->sample_fmt,  // In sample format.
-									   codec_ctx->sample_rate, // In sample rate.
-									   0, nullptr);
-	swr_ctx = make_unique_ffmpeg<SwrContext, SwrCtxDeleter>(temp_swr_ctx);
-
-	if (response < 0 || (response = swr_init(swr_ctx.get()))) {
-		FFmpeg::print_av_error("Couldn't initialize SWR!", response);
-		return audio_data;
-	}
-
-	av_packet = make_unique_avpacket();
-	av_frame = make_unique_avframe();
-	av_decoded_frame = make_unique_avframe();
-
-	if (!av_frame || !av_decoded_frame || !av_packet) {
-		UtilityFunctions::printerr("Couldn't allocate frames/packet for audio!");
-		return audio_data;
-	}
-
-	size_t audio_size = 0;
-	int bytes_per_samples = av_get_bytes_per_sample(TARGET_FORMAT);
-
-	int64_t duration = (stream->duration != AV_NOPTS_VALUE) ? stream->duration : format_ctx->duration;
-
-	double stream_duration_sec = (stream->duration != AV_NOPTS_VALUE) ? (stream->duration * av_q2d(stream->time_base))
-																	  : ((double)format_ctx->duration / AV_TIME_BASE);
-
-	size_t estimated_total_samples = (size_t)(stream_duration_sec * TARGET_SAMPLE_RATE);
-	int64_t total_size = estimated_total_samples * bytes_per_samples * (stereo ? 2 : 1);
-
-	_log("Stream duration: " + String::num_int64(stream_duration_sec));
-	_log("Total size: " + String::num_int64(total_size));
-
-	if (total_size >= 2147483600) {
-		_log_err("Audio is too big, cut video into smaller parts in order to use");
-		return audio_data;
-	}
-	audio_data.resize(total_size);
-
-	while (!(FFmpeg::get_frame(format_ctx, codec_ctx.get(), stream->index, av_frame.get(), av_packet.get()))) {
-		if (av_frame->nb_samples <= 0) {
-			_log("End of audio reached!");
-			break;
-		}
-
-		// Copy decoded data to new frame.
-		av_decoded_frame->format = TARGET_FORMAT;
-		av_decoded_frame->ch_layout = TARGET_LAYOUT;
-		av_decoded_frame->sample_rate = TARGET_SAMPLE_RATE;
-		av_decoded_frame->nb_samples = swr_get_out_samples(swr_ctx.get(), av_frame->nb_samples);
-
-		if ((response = av_frame_get_buffer(av_decoded_frame.get(), 0)) < 0) {
-			FFmpeg::print_av_error("Couldn't create new frame for swr!", response);
-			av_frame_unref(av_frame.get());
-			av_frame_unref(av_decoded_frame.get());
-			break;
-		}
-
-		response = swr_convert_frame(swr_ctx.get(), av_decoded_frame.get(), av_frame.get());
-		if (response < 0) {
-			FFmpeg::print_av_error("Couldn't convert the audio frame!", response);
-			av_frame_unref(av_frame.get());
-			av_frame_unref(av_decoded_frame.get());
-			break;
-		}
-
-		size_t byte_size = av_decoded_frame->nb_samples * bytes_per_samples * (stereo ? 2 : 1);
+	auto append = [&](int converted) {
+		if (converted <= 0 || overflow)
+			return;
+		int64_t byte_size = (int64_t)converted * frame_bytes;
 		if (audio_size + byte_size > audio_data.size()) {
-			_log("Audio buffer overflow");
-			_log("Size needed is " + String::num_int64(audio_size + byte_size));
-			_log("Size of array is " + String::num_int64(audio_data.size()));
-
-			size_t new_size = audio_size + byte_size + 4096;
+			int64_t need = audio_size + byte_size;
+			if (need >= MAX_SIZE) {
+				_log_err("Audio exceeds the 2GB limit; truncating. Cut the source into smaller parts");
+				overflow = true;
+				return;
+			}
+			int64_t new_size = audio_data.size() * 2; // geometric growth
+			if (new_size < need)
+				new_size = need;
+			if (new_size >= MAX_SIZE)
+				new_size = MAX_SIZE;
 			audio_data.resize(new_size);
+			dst = audio_data.ptrw(); // re-fetch after a grow
 		}
-
-		memcpy(&(audio_data.ptrw()[audio_size]), av_decoded_frame->extended_data[0], byte_size);
+		memcpy(dst + audio_size, scratch.data(), byte_size);
 		audio_size += byte_size;
+	};
 
-		av_frame_unref(av_frame.get());
-		av_frame_unref(av_decoded_frame.get());
-	}
+	int n;
+	while (!overflow && (n = decode_audio_frame(pipe, frame.get(), packet.get(), scratch)) >= 0)
+		append(n);
+	if (!overflow)
+		append(flush_audio_resampler(pipe, scratch)); // drain the resampler delay tail
 
-	if (audio_size < audio_data.size()) {
-		_log("Resizing PackedByteArray");
-		_log("Audio size: " + String::num_int64(audio_size));
-		_log("PackedByteArray size: " + String::num_int64(audio_data.size()));
-		audio_data.resize(audio_size);
-	}
-
-	// Cleanup.
-	avcodec_flush_buffers(codec_ctx.get());
-
+	audio_data.resize(audio_size);
 	return audio_data;
 }
 
-
-PackedByteArray GoZenAudio::get_audio_data(String file_path, int stream_index, bool stereo) {
-	av_log_set_level(AV_LOG_VERBOSE);
-	AVFormatContext* format_ctx = nullptr;
-	PackedByteArray data = PackedByteArray();
-	PackedByteArray file_buffer; // For `res://` videos.
-	UniqueAVIOContext avio_ctx;
-	BufferData buffer_data;
-
-	if (file_path.begins_with("res://") || file_path.begins_with("user://")) {
-		if (!(format_ctx = avformat_alloc_context())) {
-			_log_err("Failed to allocate AVFormatContext");
-			return data;
-		}
-
-		file_buffer = FileAccess::get_file_as_bytes(file_path);
-
-		if (file_buffer.is_empty()) {
-			avformat_free_context(format_ctx);
-			_log_err("Couldn't load file from res:// at path '" + file_path + "'");
-			return data;
-		}
-
-		buffer_data.ptr = file_buffer.ptrw();
-		buffer_data.size = file_buffer.size();
-		buffer_data.offset = 0;
-
-		unsigned char* avio_ctx_buffer = (unsigned char*)av_malloc(FFmpeg::AVIO_CTX_BUFFER_SIZE);
-		avio_ctx = make_unique_ffmpeg<AVIOContext, AVIOContextDeleter>(
-			avio_alloc_context(avio_ctx_buffer, FFmpeg::AVIO_CTX_BUFFER_SIZE, 0, &buffer_data,
-							   &FFmpeg::read_buffer_packet, nullptr, &FFmpeg::seek_buffer));
-
-		if (!avio_ctx) {
-			av_free(avio_ctx_buffer);
-			_log_err("Failed to create avio_ctx");
-			return data;
-		}
-
-		format_ctx->pb = avio_ctx.get();
-
-		if (avformat_open_input(&format_ctx, nullptr, nullptr, nullptr) != 0) {
-			_log_err("Failed to open input from memory buffer");
-			return data;
-		}
-
-	} else if (avformat_open_input(&format_ctx, file_path.utf8(), NULL, NULL)) {
-		_log_err("Couldn't open audio");
-		return data;
-	}
-
-	if (avformat_find_stream_info(format_ctx, NULL)) {
-		_log_err("Couldn't find stream info");
-		return data;
-	}
-
-	if (stream_index == -1) {
-		for (int i = 0; i < format_ctx->nb_streams; i++) {
-			AVCodecParameters* av_codec_params = format_ctx->streams[i]->codecpar;
-
-			if (!avcodec_find_decoder(av_codec_params->codec_id)) {
-				format_ctx->streams[i]->discard = AVDISCARD_ALL;
-				continue;
-			} else if (av_codec_params->codec_type == AVMEDIA_TYPE_AUDIO) {
-				stream_index = i;
-				break;
-			}
-		}
-	}
-
-	// Discard all non-audio streams.
-	for (int i = 0; i < format_ctx->nb_streams; i++) {
-		AVCodecParameters* av_codec_params = format_ctx->streams[i]->codecpar;
-		if (!avcodec_find_decoder(av_codec_params->codec_id) || av_codec_params->codec_type != AVMEDIA_TYPE_AUDIO) {
-			if (i != stream_index) {
-				format_ctx->streams[i]->discard = AVDISCARD_ALL;
-			}
-		}
-	}
-
-	if (stream_index >= 0 && stream_index < format_ctx->nb_streams) {
-		AVCodecParameters* av_codec_params = format_ctx->streams[stream_index]->codecpar;
-
-		if (av_codec_params->codec_type == AVMEDIA_TYPE_AUDIO)
-			data = _get_audio(format_ctx, format_ctx->streams[stream_index], stereo);
-	} else {
-		_log_err("Invalid stream index");
-		return data;
-	}
-
-
-	avformat_close_input(&format_ctx);
-	av_log_set_level(AV_LOG_INFO);
-	return data;
-}
-
 void GoZenAudio::_bind_methods() {
-	ClassDB::bind_static_method("GoZenAudio", D_METHOD("get_audio_data", "file_path", "stream_index", "stereo"),
-		&GoZenAudio::get_audio_data, DEFVAL(-1), DEFVAL(true));
+	ClassDB::bind_static_method("GoZenAudio",
+		D_METHOD("get_audio_data", "file_path", "stream_index", "stereo", "sample_rate"),
+		&GoZenAudio::get_audio_data, DEFVAL(-1), DEFVAL(true), DEFVAL(44100));
+	ClassDB::bind_static_method("GoZenAudio",
+		D_METHOD("get_audio_stream_wav", "file_path", "stream_index", "stereo", "sample_rate"),
+		&GoZenAudio::get_audio_stream_wav, DEFVAL(-1), DEFVAL(true), DEFVAL(44100));
 }

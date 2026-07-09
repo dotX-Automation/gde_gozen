@@ -724,7 +724,7 @@ def compile_ffmpeg_web(arch: str) -> None:
 
     print("Configuring FFmpeg for Web ...")
 
-    path: str = "./test_room/addons/gde_gozen/"
+    path: str = "./addons/gde_gozen/"
     target_include_dir: str = f"{path}/include"
     ffmpeg_bin_dir: str = "ffmpeg/bin"
     ffmpeg_lib_dir: str = f"{ffmpeg_bin_dir}/lib"
@@ -827,17 +827,6 @@ def compile_ffmpeg_web(arch: str) -> None:
     print("Compiling FFmpeg for Web finished!")
 
 
-def update_csharp_bins():
-    for root, _, files in os.walk("test_room"):
-        for file in files:
-            if file.startswith("libgozen"):
-                rel_path = os.path.relpath(root, "test_room")
-                dst_dir = os.path.join("test_room_csharp", rel_path)
-
-                os.makedirs(dst_dir, exist_ok=True)
-                shutil.copy2(os.path.join(root, file), os.path.join(dst_dir, file))
-
-
 def main():
     print("v===================v")
     print("| GDE GoZen builder |")
@@ -929,7 +918,6 @@ def main():
         subprocess.run(clean_cmd, cwd="./", env=env)
 
     subprocess.run(cmd, cwd="./", env=env)
-    update_csharp_bins()
 
     print("")
     print("v=========================v")

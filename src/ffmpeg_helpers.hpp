@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 
@@ -111,9 +112,35 @@ inline UniqueAVPacket make_unique_avpacket() {
 	return make_unique_ffmpeg<AVPacket, AVPacketDeleter>(av_packet_alloc());
 }
 
+// Cross-thread abort/timeout signal for a blocking FFmpeg open/read. Owned by the front-end
+// (stable address); only a pointer is stored in AVFormatContext::interrupt_callback.opaque, so
+// this never has to live inside the move-only AudioDecodePipeline. Atomics keep main<->worker
+// access race-free under -fno-exceptions.
+struct InterruptState {
+	std::atomic<bool> aborted{false};    // set by cancel(); on-demand abort
+	std::atomic<int64_t> deadline_us{0}; // 0 = no deadline; else av_gettime_relative() cutoff (µs)
+};
+
 // For `res://` videos.
 struct BufferData {
 	uint8_t* ptr;
 	size_t size;
 	size_t offset;
+};
+
+// Decoded-audio pipeline: a fully-opened demux/decode/resample chain producing interleaved
+// samples in a target format. Move-only (owns FFmpeg contexts via RAII). Used by both
+// AudioStreamFFmpeg (streaming) and GoZenAudio (batch decode).
+struct AudioDecodePipeline {
+	UniqueAVFormatCtxInput format_ctx;
+	UniqueAVCodecCtx codec_ctx;
+	UniqueSwrCtx swr_ctx;
+	UniqueAVIOContext avio_ctx;              // set only for memory sources
+	std::unique_ptr<BufferData> buffer_data; // heap-allocated: AVIO opaque points here; address must survive moves
+	AVStream* stream = nullptr;              // borrowed; owned by format_ctx
+	int bytes_per_sample = 0;                // output bytes per sample (per channel)
+	int sample_rate = 0;                     // OUTPUT sample rate
+	int out_channels = 0;                    // output channel count
+	bool stereo = true;                      // source has >= 2 channels (for _is_monophonic)
+	bool valid() const { return format_ctx && codec_ctx && swr_ctx && stream; }
 };
