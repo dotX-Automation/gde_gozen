@@ -46,8 +46,6 @@ enum COLOR_PROFILE { AUTO, BT470, BT601, BT709, BT2020, BT2100 }
 #region Constants
 const SHADER_PATH: String = "res://addons/gde_gozen/video_yuva_to_rgba.gdshader"
 const AUDIO_OFFSET_THRESHOLD: float = 0.1
-const RECONNECT_MAX_ATTEMPTS: int = 5
-const RECONNECT_BACKOFF_MSEC: int = 500
 const PAUSE_POLL_MSEC: int = 10
 #endregion
 
@@ -62,6 +60,14 @@ const PAUSE_POLL_MSEC: int = 10
 ## open (metadata/video/audio probe, before the decoder is published) would then stall close()
 ## indefinitely — keep this > 0 unless you have a reason not to.
 @export var network_timeout: float = 5.0
+
+@export_group("Live Reconnect")
+## Live sources only. Reconnect attempts after a dropped read:
+## -1 = infinite (default, retry until the source returns or close()),
+## 0 = none (treat the first failure as fatal), N = N attempts before media_error.
+@export var reconnect_max_attempts: int = -1
+## Live sources only. Seconds to wait between reconnect attempts.
+@export var reconnect_delay: float = 0.5
 
 @export_group("Video")
 @export var video_enable: bool = true
@@ -472,27 +478,50 @@ func _open_and_decode() -> void:
 
 func _run_live() -> void:
 	var attempts := 0
+	var disconnected := false
 	while _get_running():
 		if _get_paused():
 			OS.delay_msec(PAUSE_POLL_MSEC)
 			continue
 		if _video.next_frame(false):
 			attempts = 0
+			if disconnected:
+				disconnected = false
+				_notify_reconnected.call_deferred()
 			_store_frame()
 		else:
 			if not _get_running():
 				return  # cancelled by close(): don't reconnect/backoff, exit promptly
-			attempts += 1
-			if attempts > RECONNECT_MAX_ATTEMPTS:
+			# Reconnect policy — reconnect_max_attempts: -1 = infinite, 0 = none, N = N attempts.
+			if reconnect_max_attempts >= 0 and attempts >= reconnect_max_attempts:
 				_notify_error.call_deferred("Live stream lost: %s" % _path)
 				return
-			_notify_disconnected.call_deferred()
-			OS.delay_msec(RECONNECT_BACKOFF_MSEC)
+			if not disconnected:
+				disconnected = true
+				_notify_disconnected.call_deferred()
+			attempts += 1
+			_reconnect_sleep()
 			_video.close()
 			if _video.open(_path) == OK and _video.next_frame(false):
 				attempts = 0
+				disconnected = false
 				_notify_reconnected.call_deferred()
 				_store_frame()
+
+
+func _reconnect_delay_ms() -> int:
+	# Shared by the video worker loop and the main-thread audio reconnect poll.
+	return maxi(0, int(reconnect_delay * 1000.0))
+
+
+func _reconnect_sleep() -> void:
+	# Worker thread. Sleep reconnect_delay in small steps so close() (which clears _running)
+	# stays responsive even when reconnect_delay is tuned high.
+	var remaining := _reconnect_delay_ms()
+	while remaining > 0 and _get_running():
+		var step := mini(remaining, PAUSE_POLL_MSEC)
+		OS.delay_msec(step)
+		remaining -= step
 
 
 func _run_finite() -> void:
@@ -737,6 +766,10 @@ func _poll_audio_health() -> void:
 	if not _audio_reconnecting:
 		if _audio.is_stream_healthy():
 			return
+		if reconnect_max_attempts == 0:   # no retries — treat the first failure as fatal
+			_audio_lost = true
+			_notify_error("Live audio lost: %s" % _path)
+			return
 		_audio_reconnecting = true
 		_audio_reconnect_attempts = 0
 		_audio_reconnect_next_ms = 0
@@ -745,7 +778,8 @@ func _poll_audio_health() -> void:
 	# A reconnect cycle is active. Fire one attempt only when the previous concluded and backoff elapsed.
 	if _audio_attempt_inflight or Time.get_ticks_msec() < _audio_reconnect_next_ms:
 		return
-	if _audio_reconnect_attempts >= RECONNECT_MAX_ATTEMPTS:
+	# reconnect_max_attempts: -1 = infinite, N = N attempts (0 handled above at detection).
+	if reconnect_max_attempts >= 0 and _audio_reconnect_attempts >= reconnect_max_attempts:
 		_audio_reconnecting = false
 		_audio_lost = true
 		_notify_error("Live audio lost: %s" % _path)
@@ -776,7 +810,7 @@ func _on_audio_open_result(ok: bool, gen: int) -> void:
 			_audio_reconnecting = false
 			_notify_reconnected()   # emits media_reconnected
 	elif _audio_reconnecting:
-		_audio_reconnect_next_ms = Time.get_ticks_msec() + RECONNECT_BACKOFF_MSEC
+		_audio_reconnect_next_ms = Time.get_ticks_msec() + _reconnect_delay_ms()
 #endregion
 
 
