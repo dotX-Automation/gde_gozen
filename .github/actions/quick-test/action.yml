@@ -19,5 +19,11 @@ runs:
         export WINEPREFIX="$(pwd)/.wine_tmp"
         mkdir -p "$WINEPREFIX"
 
+        # Build a throwaway project around the freshly built addon.
+        SMOKE="$(mktemp -d)"
+        mkdir -p "$SMOKE/addons"
+        cp -r addons/gde_gozen "$SMOKE/addons/gde_gozen"
+        printf 'config_version=5\n\n[application]\n\nconfig/name="gde_gozen_smoke"\nconfig/features=PackedStringArray("4.5")\n' > "$SMOKE/project.godot"
+
         GODOT_BIN="${{ inputs.godot_bin }}"
-        $GODOT_BIN --headless --verbose --path test_room --quit-after 200
+        $GODOT_BIN --headless --verbose --path "$SMOKE" --quit-after 200

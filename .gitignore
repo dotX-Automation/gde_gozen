@@ -58,11 +58,6 @@ ffmpeg_examples
 addons/gde_gozen/bin/*
 !addons/gde_gozen/bin/.gdignore
 
-# GDExtension libraries copied into the test_room reference project
-# (keep only the .gdignore so Godot skips importing the folder)
-test_room/addons/gde_gozen/bin/*
-!test_room/addons/gde_gozen/bin/.gdignore
-
 .idea/
 .qodo/
 /libressl-3.9.2

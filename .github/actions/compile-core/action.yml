@@ -8,7 +8,8 @@ inputs:
     required: true
     description: x86_64, arm64, arm32, ...
   ffmpeg_arch_arg:
-    required: true
+    required: false
+    default: ""
     description: Override if script expects different arch name (for example - armv7a for android).
 
 runs:
@@ -36,23 +37,10 @@ runs:
       shell: bash
       run: scons -j4 target=template_release platform=${{ inputs.platform }} arch=${{ inputs.arch }}
 
-    - name: Copy to C#
-      shell: bash
-      run: |
-        python3 -c "import build; build.update_csharp_bins()"
-
-    - name: Upload artifact (GDScript)
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: bin_${{ inputs.platform }}_${{ inputs.arch }}
-        path: test_room/addons/gde_gozen/bin
-        retention-days: 1
-        if-no-files-found: error
-
-    - name: Upload artifact (C#)
-      uses: actions/upload-artifact@v4
-      with:
-        name: bin_${{ inputs.platform }}_${{ inputs.arch }}_csharp
-        path: test_room_csharp/addons/gde_gozen/bin
+        path: addons/gde_gozen/bin
         retention-days: 1
         if-no-files-found: error

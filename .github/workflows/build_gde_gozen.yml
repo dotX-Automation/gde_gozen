@@ -193,67 +193,22 @@ jobs:
         with:
           path: artifacts
 
-      - name: Organize & finalize
+      - name: Assemble the addon
         run: |
-          VERSION="v${{ inputs.version }}"
+          # addons/gde_gozen/ (gdextension + scripts + shader + icon + LICENSE + bin/.gdignore)
+          # is tracked in the repo; the checkout already provides it. Drop in the per-arch libs.
+          mkdir -p addons/gde_gozen/bin
+          cp -r artifacts/bin_linux_x86_64/*   addons/gde_gozen/bin/
+          cp -r artifacts/bin_linux_arm64/*    addons/gde_gozen/bin/
+          cp -r artifacts/bin_windows_x86_64/* addons/gde_gozen/bin/
+          cp -r artifacts/bin_macos_x86_64/*   addons/gde_gozen/bin/
+          cp -r artifacts/bin_macos_arm64/*    addons/gde_gozen/bin/
+          cp -r artifacts/bin_android_arm64/*  addons/gde_gozen/bin/
+          cp -r artifacts/bin_android_arm32/*  addons/gde_gozen/bin/
 
-          mkdir -p test_room/addons/gde_gozen/bin
-          mkdir -p test_room_csharp/addons/gde_gozen/bin
-
-          # Linux.
-          cp -r artifacts/bin_linux_x86_64/* test_room/addons/gde_gozen/bin/
-          cp -r artifacts/bin_linux_arm64/* test_room/addons/gde_gozen/bin/
-          # Windows.
-          cp -r artifacts/bin_windows_x86_64/* test_room/addons/gde_gozen/bin/
-          # MacOS.
-          cp -r artifacts/bin_macos_x86_64/* test_room/addons/gde_gozen/bin/
-          cp -r artifacts/bin_macos_arm64/* test_room/addons/gde_gozen/bin/
-          # Android.
-          cp -r artifacts/bin_android_arm64/* test_room/addons/gde_gozen/bin/
-          cp -r artifacts/bin_android_arm32/* test_room/addons/gde_gozen/bin/
-
-          # Linux (C#).
-          cp -r artifacts/bin_linux_x86_64_csharp/* test_room_csharp/addons/gde_gozen/bin/
-          cp -r artifacts/bin_linux_arm64_csharp/* test_room_csharp/addons/gde_gozen/bin/
-          # Windows (C#).
-          cp -r artifacts/bin_windows_x86_64_csharp/* test_room_csharp/addons/gde_gozen/bin/
-          # MacOS (C#).
-          cp -r artifacts/bin_macos_x86_64_csharp/* test_room_csharp/addons/gde_gozen/bin/
-          cp -r artifacts/bin_macos_arm64_csharp/* test_room_csharp/addons/gde_gozen/bin/
-          # Android (C#).
-          cp -r artifacts/bin_android_arm64_csharp/* test_room_csharp/addons/gde_gozen/bin/
-          cp -r artifacts/bin_android_arm32_csharp/* test_room_csharp/addons/gde_gozen/bin/
-
-          # Copy license and config.
-          cp LICENSE test_room/addons/gde_gozen/
-          cp LICENSE test_room_csharp/addons/gde_gozen/
-          sed -i 's/^version="[^"]*"/version="'$VERSION'"/' test_room/addons/gde_gozen/plugin.cfg
-          sed -i 's/^version="[^"]*"/version="'$VERSION'"/' test_room_csharp/addons/gde_gozen/plugin.cfg
-
-      - name: Upload artifact (GDScript)
+      - name: Upload addon
         uses: actions/upload-artifact@v4
         with:
           name: GDE_GoZen_v${{ inputs.version }}
-          path: test_room/addons/
-          retention-days: 7
-
-      - name: Upload artifact (C#)
-        uses: actions/upload-artifact@v4
-        with:
-          name: GDE_GoZen_v${{ inputs.version }}_csharp
-          path: test_room_csharp/addons/
-          retention-days: 7
-
-      - name: Upload artifact (GDScript Test Room)
-        uses: actions/upload-artifact@v4
-        with:
-          name: GDE_GoZen_test_room_v${{ inputs.version }}
-          path: test_room/
-          retention-days: 7
-
-      - name: Upload artifact (C# Test Room)
-        uses: actions/upload-artifact@v4
-        with:
-          name: GDE_GoZen_test_room_v${{ inputs.version }}_csharp
-          path: test_room_csharp/
+          path: addons/
           retention-days: 7
