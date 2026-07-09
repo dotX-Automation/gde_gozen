@@ -4,10 +4,26 @@ extends Control
 ##
 ## One worker Thread per instance owns the GoZenVideo decoder and pushes decoded
 ## planes into a mutex-guarded slot; the main thread presents them via
-## RenderingServer, drives the AudioStreamPlayer, and emits signals. Live sources
-## (RTSP) are latency-first (latest-wins, no active A/V resync); finite files add
-## framerate pacing, seek, loop and audio-follow sync. The media catalog is a
-## proxy over a one-shot GoZenMetadata probe.
+## RenderingServer, drives the AudioStreamPlayer, and emits signals. Because each
+## instance decodes on its own thread, several live RTSP streams can play at once
+## without stalling the main thread. Live sources (RTSP) are latency-first
+## (latest-wins, no active A/V resync) and self-heal across reconnects; finite
+## files add framerate pacing, seek, loop and audio-follow sync. The media catalog
+## is a proxy over a one-shot GoZenMetadata probe.
+##
+## Usage:
+## [codeblock]
+## var player := MediaPlayback.new()
+## add_child(player)
+## player.open("rtsp://mediamtx.local/cam0")  # live; or "res://clip.mp4" for finite
+## [/codeblock]
+##
+## Known limitations:
+## - Live A/V sync is best-effort: video and audio are independent connections with
+##   no active resync; latency stays bounded by video latest-wins and the audio
+##   ring buffer.
+## - Live reconnect assumes an unchanged resolution; a mid-stream resolution change
+##   would mismatch the preallocated textures.
 
 #region Signals
 signal media_opened

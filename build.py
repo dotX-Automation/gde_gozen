@@ -724,7 +724,7 @@ def compile_ffmpeg_web(arch: str) -> None:
 
     print("Configuring FFmpeg for Web ...")
 
-    path: str = "./test_room/addons/gde_gozen/"
+    path: str = "./addons/gde_gozen/"
     target_include_dir: str = f"{path}/include"
     ffmpeg_bin_dir: str = "ffmpeg/bin"
     ffmpeg_lib_dir: str = f"{ffmpeg_bin_dir}/lib"
@@ -827,19 +827,6 @@ def compile_ffmpeg_web(arch: str) -> None:
     print("Compiling FFmpeg for Web finished!")
 
 
-def update_test_room_bin(platform: str) -> None:
-    # Copy the freshly built GDExtension library from the repo-root build
-    # output (bin/<platform>/) into the test_room reference project so it can
-    # load the extension through its res:// .gdextension library paths.
-    src_dir = os.path.join("bin", platform)
-    dst_dir = os.path.join("test_room", "addons", "gde_gozen", "bin", platform)
-    os.makedirs(dst_dir, exist_ok=True)
-
-    for file in glob.glob(os.path.join(src_dir, "libgozen*")):
-        shutil.copy2(file, dst_dir)
-        print(f"Copied {file} to {dst_dir}")
-
-
 def main():
     print("v===================v")
     print("| GDE GoZen builder |")
@@ -931,7 +918,6 @@ def main():
         subprocess.run(clean_cmd, cwd="./", env=env)
 
     subprocess.run(cmd, cwd="./", env=env)
-    update_test_room_bin(platform)
 
     print("")
     print("v=========================v")
