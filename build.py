@@ -27,6 +27,12 @@ import tarfile
 THREADS: int = os.cpu_count() or 4
 PATH_BUILD_WINDOWS: str = "build_on_windows.py"
 
+# godot-cpp (master/v10.x) versions independently from Godot: the target Godot
+# API is now selected at build time. We pin it explicitly so the build stays
+# reproducible even as master's default api_version drifts upward.
+# Must match `compatibility_minimum` in addons/gde_gozen/gozen.gdextension.
+GODOT_API_VERSION: str = "4.7"
+
 ARCH_X86_64: str = "x86_64"
 ARCH_X86_32: str = "x86_32"
 ARCH_ARM64: str = "arm64"  # armv8
@@ -897,6 +903,7 @@ def main():
         f"target=template_{target}",
         f"platform={platform}",
         f"arch={arch}",
+        f"api_version={GODOT_API_VERSION}",
     ]
 
     if platform == OS_ANDROID:
@@ -914,6 +921,7 @@ def main():
             f"target=template_{target}",
             f"platform={platform}",
             f"arch={arch}",
+            f"api_version={GODOT_API_VERSION}",
         ]
         subprocess.run(clean_cmd, cwd="./", env=env)
 
