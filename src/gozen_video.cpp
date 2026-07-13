@@ -66,7 +66,7 @@ Error GoZenVideo::open(const String& video_path) {
 		return _log_err("Couldn't find a decodable video stream");
 	}
 
-	// Timebase + start time. B2: stream_time_base_video MUST be set before start_time_video uses it.
+	// Timebase + start time. stream_time_base_video MUST be set before start_time_video uses it.
 	stream_time_base_video = av_q2d(av_stream->time_base) * 1000.0 * 10000.0; // stream units -> 100ns ticks
 
 	if (av_stream->start_time != AV_NOPTS_VALUE)

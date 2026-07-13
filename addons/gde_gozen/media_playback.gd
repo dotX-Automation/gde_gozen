@@ -711,7 +711,7 @@ func _seek_audio(frame_nr: int) -> void:
 func _open_audio_task(stream_index: int, gen: int) -> void:
 	# Runs on a WorkerThreadPool thread. The only off-main work is the blocking open().
 	var a := AudioStreamFFmpeg.new()
-	a.set_network_timeout(network_timeout)   # apply the user's timeout (fixes the old omission)
+	a.set_network_timeout(network_timeout)
 
 	_mutex.lock()
 	if gen != _audio_open_gen:                # superseded before we even started
