@@ -1,6 +1,6 @@
 # GDE GoZen
 ## Adding the addon to your project
-Put this folder, `gde_gozen`, inside of a folder called `addons` inside of your Godot project and re-open your project. After reloading you will have access to a new node, `VideoPlayback`. This node has a lot of documentation comments so by pressing F1 inside Godot and search for the node `VideoPlayback`, you'll find it's documentation and more notes on how to use it.
+Put this folder, `gde_gozen`, inside of a folder called `addons` inside of your Godot project and re-open your project. After reloading you will have access to a new node, `MediaPlayback`. This node has a lot of documentation comments so by pressing F1 inside Godot and search for the node `MediaPlayback`, you'll find it's documentation and more notes on how to use it.
 
 ## Videos in the file tree
 To see video files in your projects file tree, you need to add `mp4` and any other video extensions you might use to your Editor settings in `docks/filesystem/other_file_extensions`.

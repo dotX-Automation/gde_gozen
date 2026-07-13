@@ -1,3 +1,4 @@
+@icon("res://addons/gde_gozen/icon.svg")
 class_name MediaPlayback
 extends Control
 ## Threaded media playback for the HMI.
