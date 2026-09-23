@@ -49,7 +49,7 @@ class GoZenVideo : public Resource {
 	inline Ref<Image> get_a_data() const { return a_data; }
 
 	// Metadata getters
-	inline String get_path() const { return path; }
+	inline String get_media_path() const { return path; }
 
 	inline Vector2i get_resolution() const { return resolution; }
 

@@ -26,6 +26,8 @@ import tarfile
 
 THREADS: int = os.cpu_count() or 4
 PATH_BUILD_WINDOWS: str = "build_on_windows.py"
+# ffmpeg/bin holds a single target at a time; this records which one it was built for.
+FFMPEG_TARGET_STAMP: str = "./ffmpeg/bin/.gozen_target"
 
 # godot-cpp (master/v10.x) versions independently from Godot: the target Godot
 # API is now selected at build time. We pin it explicitly so the build stays
@@ -403,6 +405,10 @@ def compile_ffmpeg(platform: str, arch: str) -> None:
         compile_ffmpeg_android(arch)
     elif platform == OS_WEB:
         compile_ffmpeg_web(arch)
+
+    # Every compile_ffmpeg_* exits on failure, so reaching here means ffmpeg/bin is valid for this target.
+    with open(FFMPEG_TARGET_STAMP, "w") as f:
+        f.write(f"{platform}.{arch}")
 
 
 def compile_ffmpeg_linux(arch: str) -> None:
@@ -833,6 +839,15 @@ def compile_ffmpeg_web(arch: str) -> None:
     print("Compiling FFmpeg for Web finished!")
 
 
+def _fail(reason: str) -> None:
+    print("")
+    print("v===========================v")
+    print("| GDE GoZen build FAILED    |")
+    print("^===========================^")
+    print(reason)
+    sys.exit(1)
+
+
 def main():
     print("v===================v")
     print("| GDE GoZen builder |")
@@ -891,6 +906,14 @@ def main():
 
     if _print_options("(Re)compile ffmpeg?", ["yes", "no"]) == 1:
         compile_ffmpeg(platform, arch)
+    elif os.path.exists(FFMPEG_TARGET_STAMP):
+        # Refuse before scons runs: linking against another target's FFmpeg fails only after
+        # scons has already removed the previous library.
+        with open(FFMPEG_TARGET_STAMP) as f:
+            built_for = f.read().strip()
+        if built_for != f"{platform}.{arch}":
+            _fail(f"ffmpeg/bin was built for {built_for}, not {platform}.{arch}; recompile FFmpeg")
+
 
     # Godot requires arm32 instead of armv7a.
     if arch == ARCH_ARMV7A:
@@ -925,7 +948,8 @@ def main():
         ]
         subprocess.run(clean_cmd, cwd="./", env=env)
 
-    subprocess.run(cmd, cwd="./", env=env)
+    if subprocess.run(cmd, cwd="./", env=env).returncode != 0:
+        _fail("scons failed")
 
     print("")
     print("v=========================v")

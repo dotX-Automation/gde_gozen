@@ -93,7 +93,8 @@ class FFmpeg {
 
 	static void print_av_error(const char* message, int error);
 
-	static void enable_multithreading(AVCodecContext* codec_ctx, const AVCodec* codec);
+	// `live` (no known duration) disables frame threading, which adds one frame of latency per thread.
+	static void enable_multithreading(AVCodecContext* codec_ctx, const AVCodec* codec, bool live);
 	static int get_frame(AVFormatContext* format_ctx, AVCodecContext* codec_ctx, int stream_id, AVFrame* frame,
 						 AVPacket* packet);
 	static enum AVPixelFormat get_hw_format(const enum AVPixelFormat* pix_fmt, enum AVPixelFormat* hw_pix_fmt);

@@ -104,12 +104,18 @@ Error GoZenVideo::open(const String& video_path) {
 		return _log_err("Couldn't init codec");
 	}
 
-	FFmpeg::enable_multithreading(av_codec_ctx.get(), av_codec);
+	// Live = no usable duration and no frame count: exactly the sources that end up with
+	// frame_count <= 0 below, which is MediaPlayback's live test. Must be known before avcodec_open2.
+	bool duration_from_bitrate = av_format_ctx->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE;
+	bool live = av_stream->nb_frames <= 0 && (av_format_ctx->duration <= 0 || duration_from_bitrate);
+	FFmpeg::enable_multithreading(av_codec_ctx.get(), av_codec, live);
 
 	if (avcodec_open2(av_codec_ctx.get(), av_codec, nullptr)) {
 		close();
 		return _log_err("Couldn't open codec");
 	}
+	_log(vformat("Decoder threading: live=%s thread_type=%d thread_count=%d delay=%d", live,
+				 av_codec_ctx->thread_type, av_codec_ctx->thread_count, av_codec_ctx->delay));
 
 	// resolution = decoded/render size (what Godot renders); src_resolution = SAR-adjusted display size.
 	sar = av_q2d(av_stream->codecpar->sample_aspect_ratio);
@@ -131,7 +137,6 @@ Error GoZenVideo::open(const String& video_path) {
 	}
 
 	avcodec_flush_buffers(av_codec_ctx.get());
-	bool duration_from_bitrate = av_format_ctx->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE;
 	int response = 0;
 	int attempts = 0;
 
@@ -247,18 +252,16 @@ Error GoZenVideo::open(const String& video_path) {
 		av_frame_unref(av_sws_frame.get());
 	}
 
+	// `duration` stays in AV_TIME_BASE (µs) units: get_duration_us() and frame_count read it as such.
+	// Only the stream's own copy is rescaled to its time base (e.g. MKV streams carry no duration).
 	duration = av_format_ctx->duration;
 	if (av_stream->duration == AV_NOPTS_VALUE || duration_from_bitrate) {
 		if (duration == AV_NOPTS_VALUE || duration_from_bitrate) {
 			_log("Invalid video duration, assuming continuous stream (Common for GIF/WebP)");
 			duration = 0; // Rely on EOF instead of frame_count (for images).
-		} else {
-			AVRational temp_rational = AVRational{1, AV_TIME_BASE};
-			if (temp_rational.num != av_stream->time_base.num || temp_rational.den != av_stream->time_base.den)
-				duration =
-					std::ceil(static_cast<double>(duration) * av_q2d(temp_rational) / av_q2d(av_stream->time_base));
 		}
-		av_stream->duration = duration;
+		av_stream->duration = av_rescale_q_rnd(duration, AVRational{1, AV_TIME_BASE}, av_stream->time_base,
+											   AV_ROUND_UP);
 	}
 
 	if (av_stream->nb_frames > 0)
@@ -460,7 +463,7 @@ void GoZenVideo::_bind_methods() {
 
 	// Getters
 	ClassDB::bind_method(D_METHOD("is_open"), &GoZenVideo::is_open);
-	ClassDB::bind_method(D_METHOD("get_path"), &GoZenVideo::get_path);
+	ClassDB::bind_method(D_METHOD("get_media_path"), &GoZenVideo::get_media_path);
 
 	ClassDB::bind_method(D_METHOD("get_y_data"), &GoZenVideo::get_y_data);
 	ClassDB::bind_method(D_METHOD("get_u_data"), &GoZenVideo::get_u_data);

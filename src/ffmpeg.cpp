@@ -1,4 +1,5 @@
 #include "ffmpeg.hpp"
+#include <algorithm>
 #include <cmath>
 
 
@@ -153,7 +154,7 @@ bool open_audio_pipeline(const String& path, const PackedByteArray& bytes, const
 
 	out.codec_ctx->request_sample_fmt = out_fmt;
 	if (use_multithreading)
-		FFmpeg::enable_multithreading(out.codec_ctx.get(), codec); // must precede avcodec_open2
+		FFmpeg::enable_multithreading(out.codec_ctx.get(), codec, false); // finite-only (GoZenAudio); must precede avcodec_open2
 	if (avcodec_open2(out.codec_ctx.get(), codec, nullptr) < 0)
 		return pipeline_err("Couldn't open audio codec");
 
@@ -224,10 +225,13 @@ void FFmpeg::print_av_error(const char* message, int error) {
 }
 
 
-void FFmpeg::enable_multithreading(AVCodecContext* codec_ctx, const AVCodec* codec) {
-	codec_ctx->thread_count = OS::get_singleton()->get_processor_count() - 1;
+void FFmpeg::enable_multithreading(AVCodecContext* codec_ctx, const AVCodec* codec, bool live) {
+	// Capped at 16: FFmpeg warns above that (MAX_AUTO_THREADS) and gains little.
+	codec_ctx->thread_count = std::clamp(OS::get_singleton()->get_processor_count() - 1, 1, 16);
 
-	if (codec->capabilities & AV_CODEC_CAP_FRAME_THREADS)
+	// FF_THREAD_FRAME delays output by thread_count - 1 frames (avctx->delay), so live sources
+	// use slice threading only; finite sources can afford the delay for the throughput.
+	if (!live && (codec->capabilities & AV_CODEC_CAP_FRAME_THREADS))
 		codec_ctx->thread_type = FF_THREAD_FRAME;
 	else if (codec->capabilities & AV_CODEC_CAP_SLICE_THREADS)
 		codec_ctx->thread_type = FF_THREAD_SLICE;

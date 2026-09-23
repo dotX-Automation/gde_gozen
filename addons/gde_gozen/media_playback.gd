@@ -554,6 +554,7 @@ func _run_finite() -> void:
 			OS.delay_usec(mini(frame_time - acc, 5000))
 			continue
 
+		@warning_ignore("integer_division")
 		var skips := acc / frame_time
 		acc -= skips * frame_time
 

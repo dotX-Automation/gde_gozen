@@ -45,6 +45,10 @@ export ANDROID_NDK_ROOT="$HOME/.android-sdk/ndk/28.1.13356709"
 
 # ==== BUILD ====
 
+# Stop at the first failed target (build.py exits non-zero) instead of building on top of it.
+set -eo pipefail
+trap 'rm -rf "$TOOLS_DIR"' EXIT
+
 # Linux x86_64 Debug
 printf "1\n1\n1\n1\n1\n" | python3 build.py
 
@@ -86,4 +90,3 @@ printf "4\n2\n2\n1\n1\n" | python3 build.py
 # ==== CLEAN ====
 
 find src -name "*.os" -type f -delete
-rm -rf "$TOOLS_DIR"
