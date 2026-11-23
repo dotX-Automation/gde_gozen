@@ -13,5 +13,6 @@
 using namespace godot;
 
 
+// Module initializer and terminator, defined in register_types.cpp.
 void initialize_gozen_library_init_module();
 void uninitialize_gozen_library_init_module();

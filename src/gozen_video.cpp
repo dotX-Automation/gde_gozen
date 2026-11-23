@@ -5,13 +5,9 @@ Error GoZenVideo::open(const String& video_path) {
 	if (loaded)
 		return _log_err("Already open");
 
-	interrupt.aborted.store(false, std::memory_order_relaxed);
-
 	path = video_path;
 	src_resolution = Vector2i(0, 0);
 
-	// For res:// / user:// sources, read the whole file into file_buffer and feed FFmpeg through a
-	// custom AVIO. file_buffer MUST stay alive for the whole open (AVIO reads from it lazily).
 	if (path.begins_with("res://") || path.begins_with("user://")) {
 		file_buffer = FileAccess::get_file_as_bytes(path);
 		if (file_buffer.is_empty()) {
@@ -27,7 +23,6 @@ Error GoZenVideo::open(const String& video_path) {
 		return _log_err("Couldn't open video");
 	}
 
-	// Single pass: select the first decodable, non-cover video stream; discard every other stream.
 	av_stream = nullptr;
 
 	for (unsigned int i = 0; i < av_format_ctx->nb_streams; i++) {
@@ -44,7 +39,7 @@ Error GoZenVideo::open(const String& video_path) {
 			AVDictionaryEntry* rotate_tag = av_dict_get(av_stream->metadata, "rotate", nullptr, 0);
 			rotation = rotate_tag ? atoi(rotate_tag->value) : 0;
 
-			if (rotation == 0) { // Modern rotation detection via display-matrix side data.
+			if (rotation == 0) {
 				for (int j = 0; j < av_stream->codecpar->nb_coded_side_data; ++j) {
 					const AVPacketSideData* side_data = &av_stream->codecpar->coded_side_data[j];
 					if (side_data->type == AV_PKT_DATA_DISPLAYMATRIX &&
@@ -55,10 +50,10 @@ Error GoZenVideo::open(const String& video_path) {
 					}
 				}
 			}
-			continue; // keep the selected video stream
+			continue;
 		}
 
-		av_format_ctx->streams[i]->discard = AVDISCARD_ALL; // discard every non-selected stream
+		av_format_ctx->streams[i]->discard = AVDISCARD_ALL;
 	}
 
 	if (!av_stream) {
@@ -66,18 +61,15 @@ Error GoZenVideo::open(const String& video_path) {
 		return _log_err("Couldn't find a decodable video stream");
 	}
 
-	// Timebase + start time. stream_time_base_video MUST be set before start_time_video uses it.
-	stream_time_base_video = av_q2d(av_stream->time_base) * 1000.0 * 10000.0; // stream units -> 100ns ticks
+	stream_time_base_video = av_q2d(av_stream->time_base) * 1000.0 * 10000.0;
 
 	if (av_stream->start_time != AV_NOPTS_VALUE)
 		start_time_video = (int64_t)(av_stream->start_time * stream_time_base_video);
 	else
 		start_time_video = 0;
 
-	// Setup decoder codec context.
 	const AVCodec* av_codec = nullptr;
 
-	// VP8/VP9 with alpha need libvpx.
 	if (av_stream->codecpar->codec_id == AV_CODEC_ID_VP9 || av_stream->codecpar->codec_id == AV_CODEC_ID_VP8) {
 		AVDictionaryEntry* alpha_entry = av_dict_get(av_stream->metadata, "alpha_mode", nullptr, 0);
 		if (alpha_entry && String(alpha_entry->value).strip_edges() == "1") {
@@ -104,8 +96,6 @@ Error GoZenVideo::open(const String& video_path) {
 		return _log_err("Couldn't init codec");
 	}
 
-	// Live = no usable duration and no frame count: exactly the sources that end up with
-	// frame_count <= 0 below, which is MediaPlayback's live test. Must be known before avcodec_open2.
 	bool duration_from_bitrate = av_format_ctx->duration_estimation_method == AVFMT_DURATION_FROM_BITRATE;
 	bool live = av_stream->nb_frames <= 0 && (av_format_ctx->duration <= 0 || duration_from_bitrate);
 	FFmpeg::enable_multithreading(av_codec_ctx.get(), av_codec, live);
@@ -117,7 +107,6 @@ Error GoZenVideo::open(const String& video_path) {
 	_log(vformat("Decoder threading: live=%s thread_type=%d thread_count=%d delay=%d", live,
 				 av_codec_ctx->thread_type, av_codec_ctx->thread_count, av_codec_ctx->delay));
 
-	// resolution = decoded/render size (what Godot renders); src_resolution = SAR-adjusted display size.
 	sar = av_q2d(av_stream->codecpar->sample_aspect_ratio);
 	resolution = src_resolution;
 
@@ -126,7 +115,6 @@ Error GoZenVideo::open(const String& video_path) {
 	else if (sar != 0.0 && sar != 1.0)
 		src_resolution.x /= sar;
 
-	// Allocate working frames and decode the first frame to learn the real pixel format.
 	av_packet = make_unique_avpacket();
 	av_frame = make_unique_avframe();
 	av_sws_frame = make_unique_avframe();
@@ -140,7 +128,7 @@ Error GoZenVideo::open(const String& video_path) {
 	int response = 0;
 	int attempts = 0;
 
-	arm_deadline(interrupt, network_timeout_us); // cover the first-frame reads too
+	arm_deadline(interrupt, network_timeout_us);
 	while (true) {
 		response = FFmpeg::get_frame(av_format_ctx.get(), av_codec_ctx.get(), av_stream->index, av_frame.get(),
 									 av_packet.get());
@@ -165,14 +153,11 @@ Error GoZenVideo::open(const String& video_path) {
 		}
 	}
 
-	// Interlacing.
 	if (av_frame->flags & AV_FRAME_FLAG_INTERLACED)
 		interlaced = av_frame->flags & AV_FRAME_FLAG_TOP_FIELD_FIRST ? 1 : 2;
 
-	// Color range.
 	full_color_range = av_frame->color_range == AVCOL_RANGE_JPEG;
 
-	// Framerate: average -> real -> guessed.
 	if (av_stream->avg_frame_rate.num > 0 && av_stream->avg_frame_rate.den > 0) {
 		double avg_rate = av_q2d(av_stream->avg_frame_rate);
 		if (avg_rate > 0.1)
@@ -189,7 +174,6 @@ Error GoZenVideo::open(const String& video_path) {
 		if (guessed_rate > 0.1)
 			framerate = guessed_rate;
 	}
-	// Fix for WMV/ASF reporting a false 1000 FPS.
 	if (std::abs(framerate - 1000.0) < 0.001) {
 		if (av_stream->r_frame_rate.num > 0 && av_stream->r_frame_rate.den > 0) {
 			double r_rate = av_q2d(av_stream->r_frame_rate);
@@ -199,15 +183,14 @@ Error GoZenVideo::open(const String& video_path) {
 	}
 	if (framerate <= 0) {
 		_log("Framerate could not be determined, defaulting to 24 FPS");
-		framerate = 24.0; // Mainly for image formats.
+		framerate = 24.0;
 	}
 
-	average_frame_duration = 10000000.0 / framerate; // e.g. 1s / 25fps = 400000 ticks (40ms).
+	average_frame_duration = 10000000.0 / framerate;
 
-	// Alpha layer detection.
 	const AVPixFmtDescriptor* desc = av_pix_fmt_desc_get((AVPixelFormat)av_frame->format);
 	alpha_layer = desc && (desc->flags & AV_PIX_FMT_FLAG_ALPHA);
-	if (av_frame->format == AV_PIX_FMT_PAL8) // For GIFs.
+	if (av_frame->format == AV_PIX_FMT_PAL8)
 		alpha_layer = true;
 
 	pixel_format = av_get_pix_fmt_name((AVPixelFormat)av_frame->format);
@@ -252,13 +235,11 @@ Error GoZenVideo::open(const String& video_path) {
 		av_frame_unref(av_sws_frame.get());
 	}
 
-	// `duration` stays in AV_TIME_BASE (µs) units: get_duration_us() and frame_count read it as such.
-	// Only the stream's own copy is rescaled to its time base (e.g. MKV streams carry no duration).
 	duration = av_format_ctx->duration;
 	if (av_stream->duration == AV_NOPTS_VALUE || duration_from_bitrate) {
 		if (duration == AV_NOPTS_VALUE || duration_from_bitrate) {
 			_log("Invalid video duration, assuming continuous stream (Common for GIF/WebP)");
-			duration = 0; // Rely on EOF instead of frame_count (for images).
+			duration = 0;
 		}
 		av_stream->duration = av_rescale_q_rnd(duration, AVRational{1, AV_TIME_BASE}, av_stream->time_base,
 											   AV_ROUND_UP);
@@ -282,7 +263,7 @@ Error GoZenVideo::open(const String& video_path) {
 }
 
 void GoZenVideo::close() {
-	_log("Closing video file on path: " + path);
+	_log("Closing video");
 
 	loaded = false;
 	current_frame = -1;
@@ -298,13 +279,13 @@ void GoZenVideo::close() {
 
 	av_codec_ctx.reset();
 	av_format_ctx.reset();
-	av_stream = nullptr; // borrowed from format_ctx; reset so a re-open re-selects cleanly
+	av_stream = nullptr;
 
 	avio_ctx.reset();
-	buffer_data.reset(); // reset AFTER avio_ctx (AVIO opaque pointed at it)
+	buffer_data.reset();
 	file_buffer.clear();
 
-	using_sws = false; // re-open may use a natively-supported format
+	using_sws = false;
 	alpha_layer = false;
 }
 
@@ -318,7 +299,6 @@ Error GoZenVideo::seek_frame(int frame_nr) {
 	int attempts = 0;
 	int eof_attempts = 0;
 
-	// Video seeking.
 	if ((response = _seek_frame(frame_nr)) < 0)
 		return _log_err("Couldn't seek video");
 
@@ -356,7 +336,6 @@ Error GoZenVideo::seek_frame(int frame_nr) {
 			break;
 		}
 
-		// Get frame pts.
 		if (av_frame->best_effort_timestamp == AV_NOPTS_VALUE)
 			current_pts = av_frame->pts;
 		else
@@ -365,7 +344,6 @@ Error GoZenVideo::seek_frame(int frame_nr) {
 		if (current_pts == AV_NOPTS_VALUE)
 			continue;
 
-		// Skip to actual requested frame.
 		if ((int64_t)(current_pts * stream_time_base_video) / 10000 >= frame_timestamp / 10000) {
 			_copy_frame_data();
 			break;
@@ -449,7 +427,6 @@ int GoZenVideo::_seek_frame(int frame_nr) {
 }
 
 void GoZenVideo::_bind_methods() {
-	// Methods
 	ClassDB::bind_method(D_METHOD("open", "video_path"), &GoZenVideo::open);
 	ClassDB::bind_method(D_METHOD("close"), &GoZenVideo::close);
 
@@ -461,7 +438,6 @@ void GoZenVideo::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("enable_debug"), &GoZenVideo::enable_debug);
 	ClassDB::bind_method(D_METHOD("disable_debug"), &GoZenVideo::disable_debug);
 
-	// Getters
 	ClassDB::bind_method(D_METHOD("is_open"), &GoZenVideo::is_open);
 	ClassDB::bind_method(D_METHOD("get_media_path"), &GoZenVideo::get_media_path);
 
@@ -491,7 +467,6 @@ void GoZenVideo::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_headers"), &GoZenVideo::get_headers);
 	ClassDB::bind_method(D_METHOD("get_debug_enabled"), &GoZenVideo::get_debug_enabled);
 
-	// Setters
 	ClassDB::bind_method(D_METHOD("set_headers", "headers"), &GoZenVideo::set_headers);
 
 	ClassDB::bind_method(D_METHOD("set_network_timeout", "seconds"), &GoZenVideo::set_network_timeout);
@@ -500,7 +475,6 @@ void GoZenVideo::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_sws_flag_bilinear"), &GoZenVideo::set_sws_flag_bilinear);
 	ClassDB::bind_method(D_METHOD("set_sws_flag_bicubic"), &GoZenVideo::set_sws_flag_bicubic);
 
-	// Propeties
 	ClassDB::add_property(get_class_static(), PropertyInfo(Variant::STRING, "headers"), "set_headers", "get_headers");
 	ClassDB::add_property(get_class_static(), PropertyInfo(Variant::FLOAT, "network_timeout"),
 						 "set_network_timeout", "get_network_timeout");

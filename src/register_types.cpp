@@ -1,6 +1,7 @@
 #include "register_types.hpp"
 
 
+// Registers the extension's classes at the scene level.
 void initialize_gozen_library_init_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE)
 		return;
@@ -13,13 +14,14 @@ void initialize_gozen_library_init_module(ModuleInitializationLevel p_level) {
 	ClassDB::register_class<AudioStreamFFmpegPlayback>();
 }
 
+// Unregisters nothing: godot-cpp unregisters the classes itself.
 void uninitialize_gozen_library_init_module(ModuleInitializationLevel p_level) {
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE)
 		return;
 }
 
 extern "C" {
-// Initialization
+// Entry point named by entry_symbol in gozen.gdextension.
 GDExtensionBool GDE_EXPORT gozen_library_init(GDExtensionInterfaceGetProcAddress p_get_proc_address,
 											  GDExtensionClassLibraryPtr p_library,
 											  GDExtensionInitialization* r_initialization) {

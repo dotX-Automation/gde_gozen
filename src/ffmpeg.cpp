@@ -3,13 +3,14 @@
 #include <cmath>
 
 
+// Prints msg as an error and returns false.
 static bool pipeline_err(const char* msg) {
 	UtilityFunctions::printerr("GoZen FFmpeg: ", msg, "!");
 	return false;
 }
 
-// Polled by libavformat during blocking I/O; returns non-zero to abort the operation with
-// AVERROR_EXIT. Fires on either an explicit cancel or an elapsed deadline.
+// Polled by libavformat during blocking I/O on an InterruptState. Returns 1, aborting the operation
+// with AVERROR_EXIT, once the state is cancelled or its deadline elapsed.
 static int ffmpeg_interrupt_cb(void* opaque) {
 	InterruptState* s = static_cast<InterruptState*>(opaque);
 	if (s->aborted.load(std::memory_order_relaxed))
@@ -30,6 +31,9 @@ bool open_format_context(const String& path, const PackedByteArray& bytes, const
 	out_format_ctx.reset();
 	out_avio.reset();
 	out_buffer_data.reset();
+
+	if (interrupt && interrupt->aborted.load(std::memory_order_relaxed))
+		return false;
 
 	AVFormatContext* temp_format_ctx = nullptr;
 	AVDictionary* options = nullptr;
@@ -58,7 +62,7 @@ bool open_format_context(const String& path, const PackedByteArray& bytes, const
 		}
 
 		out_buffer_data = std::make_unique<BufferData>();
-		out_buffer_data->ptr = const_cast<uint8_t*>(bytes.ptr()); // read-only use; avoids COW
+		out_buffer_data->ptr = const_cast<uint8_t*>(bytes.ptr());
 		out_buffer_data->size = (size_t)bytes.size();
 		out_buffer_data->offset = 0;
 
@@ -119,7 +123,7 @@ bool open_audio_pipeline(const String& path, const PackedByteArray& bytes, const
 
 	if (!open_format_context(path, bytes, headers, StreamMediaType::AUDIO, out.format_ctx, out.avio_ctx,
 							 out.buffer_data, interrupt))
-		return false; // open_format_context already logged
+		return false;
 
 	if (stream_index == -1) {
 		for (unsigned int i = 0; i < out.format_ctx->nb_streams; i++) {
@@ -154,14 +158,14 @@ bool open_audio_pipeline(const String& path, const PackedByteArray& bytes, const
 
 	out.codec_ctx->request_sample_fmt = out_fmt;
 	if (use_multithreading)
-		FFmpeg::enable_multithreading(out.codec_ctx.get(), codec, false); // finite-only (GoZenAudio); must precede avcodec_open2
+		FFmpeg::enable_multithreading(out.codec_ctx.get(), codec, false);
 	if (avcodec_open2(out.codec_ctx.get(), codec, nullptr) < 0)
 		return pipeline_err("Couldn't open audio codec");
 
 	const int src_rate = out.codec_ctx->sample_rate;
 	const int output_rate = (out_sample_rate > 0) ? out_sample_rate : src_rate;
 
-	out.stereo = out.codec_ctx->ch_layout.nb_channels >= 2; // source channel count (for _is_monophonic)
+	out.stereo = out.codec_ctx->ch_layout.nb_channels >= 2;
 	out.sample_rate = output_rate;
 	out.out_channels = out_layout.nb_channels;
 	out.bytes_per_sample = av_get_bytes_per_sample(out_fmt);
@@ -180,12 +184,12 @@ bool open_audio_pipeline(const String& path, const PackedByteArray& bytes, const
 int decode_audio_frame(AudioDecodePipeline& pipe, AVFrame* frame, AVPacket* packet, std::vector<uint8_t>& scratch) {
 	int r = FFmpeg::get_frame(pipe.format_ctx.get(), pipe.codec_ctx.get(), pipe.stream->index, frame, packet);
 	if (r < 0)
-		return r; // EOF or read error: stop the loop
+		return r;
 
 	int max_out = swr_get_out_samples(pipe.swr_ctx.get(), frame->nb_samples);
 	if (max_out <= 0) {
 		av_frame_unref(frame);
-		return 0; // decoded, but resampler produced nothing yet
+		return 0;
 	}
 
 	size_t need = (size_t)max_out * pipe.out_channels * pipe.bytes_per_sample;
@@ -226,17 +230,14 @@ void FFmpeg::print_av_error(const char* message, int error) {
 
 
 void FFmpeg::enable_multithreading(AVCodecContext* codec_ctx, const AVCodec* codec, bool live) {
-	// Capped at 16: FFmpeg warns above that (MAX_AUTO_THREADS) and gains little.
 	codec_ctx->thread_count = std::clamp(OS::get_singleton()->get_processor_count() - 1, 1, 16);
 
-	// FF_THREAD_FRAME delays output by thread_count - 1 frames (avctx->delay), so live sources
-	// use slice threading only; finite sources can afford the delay for the throughput.
 	if (!live && (codec->capabilities & AV_CODEC_CAP_FRAME_THREADS))
 		codec_ctx->thread_type = FF_THREAD_FRAME;
 	else if (codec->capabilities & AV_CODEC_CAP_SLICE_THREADS)
 		codec_ctx->thread_type = FF_THREAD_SLICE;
 	else
-		codec_ctx->thread_count = 1; // Don't use multithreading
+		codec_ctx->thread_count = 1;
 }
 
 
@@ -250,13 +251,18 @@ int FFmpeg::get_frame(AVFormatContext* format_ctx, AVCodecContext* codec_ctx, in
 		do {
 			av_packet_unref(packet);
 			response = av_read_frame(format_ctx, packet);
+			const AVIOInterruptCB& cb = format_ctx->interrupt_callback;
+			if (response >= 0 && cb.callback && cb.callback(cb.opaque)) {
+				av_packet_unref(packet);
+				response = AVERROR_EXIT;
+			}
 		} while (packet->stream_index != stream_id && response >= 0);
 
 		if (response == AVERROR_EOF) {
 			eof = true;
-			avcodec_send_packet(codec_ctx, nullptr); // Send null packet to signal end
+			avcodec_send_packet(codec_ctx, nullptr);
 		} else if (response < 0) {
-			if (response != AVERROR_EXIT) // interrupt-callback abort (timeout/cancel): expected, not an error
+			if (response != AVERROR_EXIT)
 				UtilityFunctions::printerr("Error reading frame! ", response);
 			break;
 		} else {
@@ -292,7 +298,6 @@ int FFmpeg::read_buffer_packet(void* opaque, uint8_t* buffer, int buffer_size) {
 	if (remaining == 0)
 		return AVERROR_EOF;
 
-	// Change buffer size if not enough data remaining.
 	size_t new_size = (remaining < (size_t)buffer_size ? remaining : (size_t)buffer_size);
 
 	memcpy(buffer, buffer_data->ptr + buffer_data->offset, new_size);
@@ -306,18 +311,18 @@ int64_t FFmpeg::seek_buffer(void* opaque, int64_t offset, int where) {
 	int64_t new_offset = 0;
 
 	switch (where) {
-	case SEEK_SET: // 0
+	case SEEK_SET:
 		new_offset = offset;
 		break;
-	case SEEK_CUR: // 1
+	case SEEK_CUR:
 		new_offset = buffer_data->offset + offset;
 		break;
-	case SEEK_END: // 2
+	case SEEK_END:
 		new_offset = buffer_data->size + offset;
 		break;
-	case AVSEEK_SIZE: // 1
+	case AVSEEK_SIZE:
 		return buffer_data->size;
-	default: // Error
+	default:
 		return -1;
 	}
 
@@ -329,6 +334,7 @@ int64_t FFmpeg::seek_buffer(void* opaque, int64_t offset, int where) {
 }
 
 
+// Value of tag key in meta, empty when absent.
 static String md_tag(AVDictionary* meta, const char* key) {
 	AVDictionaryEntry* e = av_dict_get(meta, key, nullptr, 0);
 	return e ? String(e->value) : String();

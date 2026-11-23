@@ -7,7 +7,7 @@ PackedByteArray GoZenAudio::get_audio_data(const String& file_path, int stream_i
 
 	PackedByteArray data;
 
-	PackedByteArray file_buffer; // res:// / user:// bytes; MUST outlive the pipeline below
+	PackedByteArray file_buffer;
 	if (file_path.begins_with("res://") || file_path.begins_with("user://")) {
 		file_buffer = FileAccess::get_file_as_bytes(file_path);
 		if (file_buffer.is_empty()) {
@@ -22,9 +22,8 @@ PackedByteArray GoZenAudio::get_audio_data(const String& file_path, int stream_i
 	AudioDecodePipeline pipe;
 	if (!open_audio_pipeline(file_path, file_buffer, "", stream_index, out_layout, AV_SAMPLE_FMT_S16,
 							 sample_rate, true, pipe))
-		return data; // open_audio_pipeline already logged
+		return data;
 
-	// GoZenAudio decodes the whole track to memory, so it requires a finite source.
 	if (pipe.stream->duration == AV_NOPTS_VALUE && pipe.format_ctx->duration == AV_NOPTS_VALUE) {
 		_log_err("Source has no finite duration (live stream?); use AudioStreamFFmpeg for streaming playback");
 		return data;
@@ -41,7 +40,7 @@ Ref<AudioStreamWAV> GoZenAudio::get_audio_stream_wav(const String& file_path, in
 
 	PackedByteArray pcm = get_audio_data(file_path, stream_index, stereo, sample_rate);
 	if (pcm.is_empty())
-		return Ref<AudioStreamWAV>(); // null: decode failed / source refused (already logged)
+		return Ref<AudioStreamWAV>();
 
 	Ref<AudioStreamWAV> wav;
 	wav.instantiate();
@@ -56,8 +55,8 @@ Ref<AudioStreamWAV> GoZenAudio::get_audio_stream_wav(const String& file_path, in
 PackedByteArray GoZenAudio::_decode_to_pba(AudioDecodePipeline& pipe) {
 	PackedByteArray audio_data;
 
-	const int frame_bytes = pipe.out_channels * pipe.bytes_per_sample; // bytes per output sample (all channels)
-	const int64_t MAX_SIZE = 2147483600;                               // ~2 GB ceiling (Godot PackedByteArray)
+	const int frame_bytes = pipe.out_channels * pipe.bytes_per_sample;
+	const int64_t MAX_SIZE = 2147483600;
 
 	double duration_sec = (pipe.stream->duration != AV_NOPTS_VALUE)
 							  ? pipe.stream->duration * av_q2d(pipe.stream->time_base)
@@ -65,7 +64,7 @@ PackedByteArray GoZenAudio::_decode_to_pba(AudioDecodePipeline& pipe) {
 
 	int64_t estimated = (int64_t)(duration_sec * pipe.sample_rate) * frame_bytes;
 	if (estimated < 4096)
-		estimated = 4096; // unknown/short: start small, grow geometrically
+		estimated = 4096;
 	if (estimated >= MAX_SIZE) {
 		_log_err("Audio is too big, cut the source into smaller parts in order to use");
 		return audio_data;
@@ -91,13 +90,13 @@ PackedByteArray GoZenAudio::_decode_to_pba(AudioDecodePipeline& pipe) {
 				overflow = true;
 				return;
 			}
-			int64_t new_size = audio_data.size() * 2; // geometric growth
+			int64_t new_size = audio_data.size() * 2;
 			if (new_size < need)
 				new_size = need;
 			if (new_size >= MAX_SIZE)
 				new_size = MAX_SIZE;
 			audio_data.resize(new_size);
-			dst = audio_data.ptrw(); // re-fetch after a grow
+			dst = audio_data.ptrw();
 		}
 		memcpy(dst + audio_size, scratch.data(), byte_size);
 		audio_size += byte_size;
@@ -107,7 +106,7 @@ PackedByteArray GoZenAudio::_decode_to_pba(AudioDecodePipeline& pipe) {
 	while (!overflow && (n = decode_audio_frame(pipe, frame.get(), packet.get(), scratch)) >= 0)
 		append(n);
 	if (!overflow)
-		append(flush_audio_resampler(pipe, scratch)); // drain the resampler delay tail
+		append(flush_audio_resampler(pipe, scratch));
 
 	audio_data.resize(audio_size);
 	return audio_data;

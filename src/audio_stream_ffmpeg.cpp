@@ -2,7 +2,7 @@
 
 size_t AudioSampleRing::write(const AudioSampleS16Stereo* src, size_t n) {
 	const size_t to_write = std::min(n, space());
-	const size_t tail = (_head + _count) % _data.size(); // first free slot
+	const size_t tail = (_head + _count) % _data.size();
 	const size_t first = std::min(to_write, _data.size() - tail);
 	std::memcpy(&_data[tail], src, first * sizeof(AudioSampleS16Stereo));
 	if (to_write > first)
@@ -23,8 +23,8 @@ size_t AudioSampleRing::read(AudioSampleS16Stereo* dst, size_t n) {
 }
 
 Error AudioStreamFFmpeg::open(const String& path, int stream_index) {
-	close(); // idempotent; safe to re-open
-	live_failed.store(false, std::memory_order_relaxed);
+	close();
+	read_failed.store(false, std::memory_order_relaxed);
 
 	file_path = path;
 	if (path.begins_with("res://") || path.begins_with("user://"))
@@ -35,14 +35,9 @@ Error AudioStreamFFmpeg::open(const String& path, int stream_index) {
 	bool ok = open_audio_pipeline(file_path, file_buffer, headers, stream_index, stereo_layout,
 								  AV_SAMPLE_FMT_S16, 0, false, probe_pipeline, &interrupt);
 
-	// Clear on every path: the opened format_ctx's interrupt_callback.opaque points at this member,
-	// and a prior still-alive playback may share it (Ref<AudioStreamFFmpeg> keeps &interrupt alive
-	// across re-opens) — a leaked armed deadline would abort its steady-state reads. Steady-state
-	// fill() reads must never be interrupted; aborted is never set here, so the callback becomes a
-	// permanent no-op once the deadline is cleared.
 	interrupt.deadline_us.store(0, std::memory_order_relaxed);
 	if (!ok)
-		return FAILED; // open_audio_pipeline already logged
+		return FAILED;
 
 	AVStream* s = probe_pipeline.stream;
 	if (s->duration != AV_NOPTS_VALUE)
@@ -64,8 +59,6 @@ Error AudioStreamFFmpeg::open(const String& path, int stream_index) {
 void AudioStreamFFmpeg::close() {
 	if (!loaded && !probe_available)
 		return;
-
-	_log("Closing audio file at path: " + file_path);
 
 	{
 		std::lock_guard<std::mutex> lock(probe_mutex);
@@ -109,25 +102,21 @@ bool AudioStreamFFmpegPlayback::ensure_open() {
 		return false;
 
 	if (stream->take_probe_pipeline(pipe) && pipe.valid()) {
-		// Adopted the probe pipeline (opened with the stream's interrupt): re-point its callback at
-		// this playback's own interrupt so steady-state reads are interruptible and per-playback owned.
 		install_interrupt_callback(pipe.format_ctx.get(), &playback_interrupt);
 	} else {
-		// Self-open fallback: install our interrupt from the start and arm a deadline so a dead
-		// reopen can't wedge the audio thread during _start.
 		AVChannelLayout stereo_layout = (AVChannelLayout)AV_CHANNEL_LAYOUT_STEREO;
 		arm_deadline(playback_interrupt, stream->network_timeout_us);
 		bool ok = open_audio_pipeline(stream->file_path, stream->file_buffer, stream->headers,
 									  stream->audio_stream_index, stereo_layout, AV_SAMPLE_FMT_S16, 0, false, pipe,
 									  &playback_interrupt);
-		playback_interrupt.deadline_us.store(0, std::memory_order_relaxed); // clear; steady-state re-arms per mix
+		playback_interrupt.deadline_us.store(0, std::memory_order_relaxed);
 		if (!ok)
 			return false;
 	}
 
 	mix_rate = pipe.sample_rate;
 	stereo = pipe.stereo;
-	ring.reset((size_t)pipe.sample_rate); // exactly 1 second
+	ring.reset((size_t)pipe.sample_rate);
 	return true;
 }
 
@@ -136,14 +125,12 @@ bool AudioStreamFFmpegPlayback::fill() {
 		return false;
 
 	int converted = decode_audio_frame(pipe, av_frame.get(), av_packet.get(), decode_buf);
-	if (converted == AVERROR_EXIT) { // interrupted read: live socket stalled/dead (not finite EOF)
-		stream->live_failed.store(true, std::memory_order_relaxed);
+	if (converted < 0) {
+		stream->read_failed.store(true, std::memory_order_relaxed);
 		return false;
 	}
-	if (converted < 0)
-		return false; // EOF or error
 	if (converted == 0)
-		return true; // resampler buffering; nothing to write this call
+		return true;
 
 	const AudioSampleS16Stereo* samples = reinterpret_cast<const AudioSampleS16Stereo*>(decode_buf.data());
 	size_t written = ring.write(samples, (size_t)converted);
@@ -157,8 +144,8 @@ int32_t AudioStreamFFmpegPlayback::_mix_resampled(AudioFrame* p_buffer, int32_t 
 	std::lock_guard<std::mutex> lock(decode_mutex);
 	if (!pipe.valid())
 		return 0;
-	if (stream->live_failed.load(std::memory_order_relaxed))
-		return 0; // latched dead: silence, no read (MediaPlayback reconnects off-thread)
+	if (stream->read_failed.load(std::memory_order_relaxed))
+		return 0;
 
 	arm_deadline(playback_interrupt, stream->network_timeout_us);
 
@@ -204,6 +191,7 @@ void AudioStreamFFmpegPlayback::_seek(double p_position) {
 		return;
 
 	ring.clear();
+	stream->read_failed.store(false, std::memory_order_relaxed);
 
 	int64_t target_ts = av_rescale_q((int64_t)(p_position * AV_TIME_BASE), AV_TIME_BASE_Q, pipe.stream->time_base);
 
@@ -217,14 +205,14 @@ void AudioStreamFFmpegPlayback::_seek(double p_position) {
 	while (true) {
 		int r = FFmpeg::get_frame(pipe.format_ctx.get(), pipe.codec_ctx.get(), pipe.stream->index, av_frame.get(),
 								  av_packet.get());
-		if (r < 0) // EOF during seek
+		if (r < 0)
 			return;
 
 		int64_t frame_pts = av_frame->pts;
 		int64_t frame_dur = av_frame->nb_samples;
 		if (frame_pts + frame_dur < target_ts) {
 			av_frame_unref(av_frame.get());
-			continue; // entirely before the target
+			continue;
 		}
 
 		mixed = (uint32_t)(p_position * mix_rate);
@@ -251,12 +239,10 @@ void AudioStreamFFmpegPlayback::_seek(double p_position) {
 }
 
 void AudioStreamFFmpeg::_bind_methods() {
-	// Methods
 	ClassDB::bind_method(D_METHOD("open", "path", "stream_index"), &AudioStreamFFmpeg::open, DEFVAL(-1));
 	ClassDB::bind_method(D_METHOD("close"), &AudioStreamFFmpeg::close);
 	ClassDB::bind_method(D_METHOD("cancel"), &AudioStreamFFmpeg::cancel);
 
-	// Getters
 	ClassDB::bind_method(D_METHOD("is_open"), &AudioStreamFFmpeg::is_open);
 	ClassDB::bind_method(D_METHOD("is_stream_healthy"), &AudioStreamFFmpeg::is_stream_healthy);
 	ClassDB::bind_method(D_METHOD("get_sample_rate"), &AudioStreamFFmpeg::get_sample_rate);
@@ -264,10 +250,8 @@ void AudioStreamFFmpeg::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_headers"), &AudioStreamFFmpeg::get_headers);
 	ClassDB::bind_method(D_METHOD("get_network_timeout"), &AudioStreamFFmpeg::get_network_timeout);
 
-	// Setters
 	ClassDB::bind_method(D_METHOD("set_headers", "headers"), &AudioStreamFFmpeg::set_headers);
 	ClassDB::bind_method(D_METHOD("set_network_timeout", "seconds"), &AudioStreamFFmpeg::set_network_timeout);
 
-	// Properties
 	ClassDB::add_property(get_class_static(), PropertyInfo(Variant::STRING, "headers"), "set_headers", "get_headers");
 }

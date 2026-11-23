@@ -15,12 +15,11 @@ Error GoZenMetadata::open(const String& path) {
 	arm_deadline(interrupt, network_timeout_us);
 	if (!open_format_context(path, bytes, headers, StreamMediaType::ALL, format_ctx, avio_ctx, buffer_data,
 							 &interrupt)) {
-		_log_err("Couldn't open media for metadata"); // open_format_context already logged the cause
+		_log_err("Couldn't open media for metadata");
 		return FAILED;
 	}
 
 	populate_media_metadata(format_ctx.get(), metadata);
-	// format_ctx / avio_ctx released here (RAII); the snapshot lives on in `metadata`.
 	return metadata.valid ? OK : FAILED;
 }
 
@@ -134,6 +133,7 @@ void GoZenMetadata::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("open", "path"), &GoZenMetadata::open);
 	ClassDB::bind_method(D_METHOD("close"), &GoZenMetadata::close);
+	ClassDB::bind_method(D_METHOD("cancel"), &GoZenMetadata::cancel);
 	ClassDB::bind_method(D_METHOD("is_open"), &GoZenMetadata::is_open);
 
 	ClassDB::bind_method(D_METHOD("get_duration_us"), &GoZenMetadata::get_duration_us);
