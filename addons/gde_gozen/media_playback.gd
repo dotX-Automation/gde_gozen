@@ -16,7 +16,6 @@ extends Control
 ## report the sound track alone.
 ## Live A/V sync is best-effort: video and audio are independent connections with no shared clock,
 ## and latency stays bounded by the latest-wins video and the audio ring buffer.
-## URLs in messages carry no user information.
 ##
 ## Usage:
 ## [codeblock]
@@ -514,7 +513,7 @@ func _open_and_decode() -> void:
 	var meta := GoZenMetadata.new()
 	meta.set_network_timeout(network_timeout)
 	if not _set_opening(meta) or meta.open(_path) != OK:
-		_post(_notify_error.bind("Cannot open: %s" % _redact(_path)))
+		_post(_notify_error.bind("Cannot open: %s" % _path))
 		return
 	_metadata = meta
 
@@ -524,14 +523,14 @@ func _open_and_decode() -> void:
 			v.enable_debug()
 		v.set_network_timeout(network_timeout)
 		if not _set_opening(v) or v.open(_path) != OK:
-			_post(_notify_error.bind("Cannot open video: %s" % _redact(_path)))
+			_post(_notify_error.bind("Cannot open video: %s" % _path))
 			return
 		_mutex.lock()
 		_video = v
 		_opening = null
 		_mutex.unlock()
 		if not _video.next_frame(false):
-			_post(_notify_error.bind("Cannot decode first frame: %s" % _redact(_path)))
+			_post(_notify_error.bind("Cannot decode first frame: %s" % _path))
 			return
 
 	if audio_enable and not meta.get_audio_streams().is_empty():
@@ -542,7 +541,7 @@ func _open_and_decode() -> void:
 		_set_opening(null)
 
 	if _video == null and _audio == null:
-		_post(_notify_error.bind("Nothing to play: %s" % _redact(_path)))
+		_post(_notify_error.bind("Nothing to play: %s" % _path))
 		return
 
 	var facts := {"is_live": meta.get_duration_us() <= 0, "duration_us": meta.get_duration_us()}
@@ -623,7 +622,7 @@ func _run_live() -> void:
 		if not _get_running():
 			return
 		if reconnect_max_attempts >= 0 and attempts >= reconnect_max_attempts:
-			_post(_notify_error.bind("Live stream lost: %s" % _redact(_path)))
+			_post(_notify_error.bind("Live stream lost: %s" % _path))
 			return
 		if not disconnected:
 			disconnected = true
@@ -925,7 +924,7 @@ func _poll_audio_health() -> void:
 			return
 		if reconnect_max_attempts == 0:
 			_audio_lost = true
-			_notify_audio_error("Live audio lost: %s" % _redact(_path))
+			_notify_audio_error("Live audio lost: %s" % _path)
 			return
 		_audio_reconnecting = true
 		_audio_reconnect_attempts = 0
@@ -937,7 +936,7 @@ func _poll_audio_health() -> void:
 	if reconnect_max_attempts >= 0 and _audio_reconnect_attempts >= reconnect_max_attempts:
 		_audio_reconnecting = false
 		_audio_lost = true
-		_notify_audio_error("Live audio lost: %s" % _redact(_path))
+		_notify_audio_error("Live audio lost: %s" % _path)
 		return
 	if set_audio_stream(audio_stream):
 		_audio_reconnect_attempts += 1
@@ -991,20 +990,6 @@ func _reset_state() -> void:
 	_audio_attempt_inflight = false
 	_audio_lost = false
 	_video_lost = false
-
-
-## Returns url without its user information (user:password@). The last '@' before the path ends
-## it, as in FFmpeg.
-static func _redact(url: String) -> String:
-	var host_start := url.find("://")
-	if host_start < 0:
-		return url
-	host_start += 3
-	var path_start := url.find("/", host_start)
-	if path_start < 0:
-		path_start = url.length()
-	var at := url.rfind("@", path_start - 1)
-	return url.substr(0, host_start) + url.substr(at + 1) if at >= host_start else url
 
 
 ## YUV to RGB coefficients of profile_str, or of video_color_profile when it is not AUTO.
